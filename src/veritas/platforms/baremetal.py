@@ -164,15 +164,22 @@ class BaremetalExtractor(PlatformExtractor):
         """Compute TDX reference values."""
         values = []
 
+        initrd_size = 0
+        if "initrd" in artifact_paths:
+            initrd_size = artifact_paths["initrd"].stat().st_size
+
         if "vmlinuz" in artifact_paths:
-            digest = compute_kernel_hash(str(artifact_paths["vmlinuz"]))
+            digest = compute_kernel_hash(
+                str(artifact_paths["vmlinuz"]),
+                initrd_size=initrd_size,
+            )
             values.append(ReferenceValue(
                 name="tdvfkernel",
                 value=digest,
                 category="executables",
                 description="Kernel binary (vmlinuz) digest from UEFI event log",
                 algorithm="sha384",
-                source="kata-containers RPM (PE image region hash, unpatched)",
+                source="kata-containers RPM (PE Authenticode hash, QEMU-patched)",
             ))
 
         cmdline_hash = hashlib.sha384(
