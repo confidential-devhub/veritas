@@ -1,11 +1,19 @@
 # veritas
 
-> I like Veritas tools, but this one is about truth, not woodworking.
+> Not the woodworking kind. This one computes attestation truth.
 
 Extracts attestation reference values for OpenShift Sandboxed
 Containers from the actual cluster artifacts.
 
 Point it at your OCP cluster, get the values Trustee needs.
+
+> [!WARNING]
+> For baremetal, veritas uses `oc adm release info` to resolve the
+> extensions image from the cluster's OCP release. If the cluster is
+> compromised, the resolved artifacts could be tampered with. Make
+> sure you trust the cluster before using these values for attestation.
+> For Azure, artifacts are pulled directly from the Red Hat registry
+> and signature verified via cosign.
 
 ## Why
 
