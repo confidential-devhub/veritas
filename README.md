@@ -79,8 +79,8 @@ Output goes to stdout by default. Use `-o` to write to a file.
 | <div style="width:300px">Component</div> | Azure (SHA-256) | Baremetal TDX (SHA-384) | Baremetal SNP (SHA-384) |
 |---|---|---|---|
 | 🟢 💾 Firmware (OVMF) | pcr03 | mr_td | *combined in `measurement`* |
-| 🟢 💾 Kernel | | tdvfkernel | *combined in `measurement`* |
-| 🟢 💾 Kernel cmdline | | tdvfkernelparams | *combined in `measurement`* |
+| 🟢 💾 Kernel ¹ | | tdvfkernel | *combined in `measurement`* |
+| 🟢 💾 Kernel cmdline ² | | tdvfkernelparams | *combined in `measurement`* |
 | 🟢 💾 Initrd | pcr09 | initrd | *combined in `measurement`* |
 | 🔴 💾 Runtime registers | | rtmr_0, rtmr_1, rtmr_2 | |
 | 🟢 💾 UKI bundle | pcr11 | | |
@@ -102,6 +102,10 @@ Output goes to stdout by default. Use `-o` to write to a file.
 💾 software: pre-computable from cluster artifacts
 ⚙️ user config: computed from user-provided input (e.g. initdata.toml)
 🔒 hardware: can't be pre-computed, must come from a live TD quote
+
+<small><i>¹ QEMU patches the kernel setup header (memory addresses, initrd location) before OVMF measures it. The hash depends on the VM memory layout, which may vary with different kata configurations. This is a known QEMU bug, already fixed upstream but not yet in RHEL. Once RHEL picks up the fix, a plain PE hash of vmlinuz will match.</i></small>
+
+<small><i>² The kernel command line includes nr_cpus=N which kata sets based on the pod's CPU resource request. A pod requesting 4 CPUs will have a different hash than one requesting 1. Veritas currently hardcodes nr_cpus=1. This is unrelated to the QEMU bug and will remain an issue until the cmdline is discovered dynamically or multiple reference values are supported for different CPU counts.</i></small>
 
 ## Output examples
 
