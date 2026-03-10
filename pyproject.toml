@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "veritas"
+version = "0.1.0"
+description = "Reference value extraction for CoCo attestation"
+authors = [{name = "Beraldo Leal", email = "bleal@redhat.com"}]
+requires-python = ">=3.11"
+license = "Apache-2.0"
+
+[project.scripts]
+veritas = "veritas.__main__:main"
+
+[project.optional-dependencies]
+snp = ["sev-snp-measure"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
