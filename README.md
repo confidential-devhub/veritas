@@ -36,6 +36,7 @@ ready for Trustee.
 - `podman`: pulls container images and extracts RPMs and artifacts
 - `skopeo`: queries the registry for image digests
 - `cosign`: verifies Red Hat image signatures (Azure only)
+- `tdx-measure`: computes TDX runtime measurement registers (Baremetal TDX only, `cargo install --git https://github.com/virtee/tdx-measure tdx-measure-cli`)
 - `KUBECONFIG` environment variable pointing to the target cluster
 
 ## Install
@@ -82,7 +83,9 @@ Output goes to stdout by default. Use `-o` to write to a file.
 | 🟢 💾 Kernel ¹ | | tdvfkernel | *combined in `measurement`* |
 | 🟢 💾 Kernel cmdline ² | | tdvfkernelparams | *combined in `measurement`* |
 | 🟢 💾 Initrd | pcr09 | initrd | *combined in `measurement`* |
-| 🔴 💾 Runtime registers | | rtmr_0, rtmr_1, rtmr_2 | |
+| 🔴 💾 Runtime register 0 ³ | | rtmr_0 | |
+| 🟢 💾 Runtime register 1 | | rtmr_1 | |
+| 🟢 💾 Runtime register 2 | | rtmr_2 | |
 | 🟢 💾 UKI bundle | pcr11 | | |
 | 🟢 💾 Credentials | pcr12 | | |
 | 🟢 💾 Launch digest | | | measurement |
@@ -107,6 +110,8 @@ Output goes to stdout by default. Use `-o` to write to a file.
 
 <small><i>² The kernel command line includes nr_cpus=N which kata sets based on the pod's CPU resource request. A pod requesting 4 CPUs will have a different hash than one requesting 1. Veritas currently hardcodes nr_cpus=1. This is unrelated to the QEMU bug and will remain an issue until the cmdline is discovered dynamically or multiple reference values are supported for different CPU counts.</i></small>
 
+<small><i>³ rtmr_0 accumulates firmware configuration events (TD HOB, CFV, SecureBoot variables, ACPI tables). Computing it offline requires the exact ACPI tables that QEMU generates at VM creation time. tdx-measure can generate these but only for Ubuntu, not RHEL. See [virtee/tdx-measure#19](https://github.com/virtee/tdx-measure/issues/19).</i></small>
+
 ## Output examples
 
 ### JSON (default)
@@ -121,7 +126,7 @@ Output goes to stdout by default. Use `-o` to write to a file.
       "value": "5cc7bd73ff2ae5b75b9011cd1f0616dc45cddc31b4b0bbc6...",
       "description": "Kernel binary (vmlinuz) digest from UEFI event log",
       "algorithm": "sha384",
-      "source": "kata-containers RPM (PE image region hash, unpatched)"
+      "source": "kata-containers RPM (PE Authenticode hash, QEMU-patched)"
     },
     {
       "name": "tdvfkernelparams",
@@ -143,6 +148,20 @@ Output goes to stdout by default. Use `-o` to write to a file.
       "description": "TD build-time measurement (OVMF/TDVF)",
       "algorithm": "sha384",
       "source": "TDVF descriptor from OVMF.inteltdx.fd"
+    },
+    {
+      "name": "rtmr_1",
+      "value": "bc875efe0e9f991c6072e3e1422e5e66e0e23c0addeaab16...",
+      "description": "Runtime measurement register 1 (kernel + boot services)",
+      "algorithm": "sha384",
+      "source": "tdx-measure --runtime-only"
+    },
+    {
+      "name": "rtmr_2",
+      "value": "3c764645b39c6402b5c9f2df3d32eedf3b880ebc9de89bf3...",
+      "description": "Runtime measurement register 2 (kernel cmdline + initrd)",
+      "algorithm": "sha384",
+      "source": "tdx-measure --runtime-only"
     }
   ],
   "hardware": [],
@@ -189,6 +208,20 @@ data:
         "value": [
           "27fb849fb05653add8be4b8c5b2793e66d1e25773a5c6f80..."
         ]
+      },
+      {
+        "name": "rtmr_1",
+        "expiration": "2099-12-31T00:00:00Z",
+        "value": [
+          "bc875efe0e9f991c6072e3e1422e5e66e0e23c0addeaab16..."
+        ]
+      },
+      {
+        "name": "rtmr_2",
+        "expiration": "2099-12-31T00:00:00Z",
+        "value": [
+          "3c764645b39c6402b5c9f2df3d32eedf3b880ebc9de89bf3..."
+        ]
       }
     ]
 ```
@@ -221,7 +254,7 @@ not match.
 ## TODO
 
 - [ ] Remove vendored QEMU patching logic once RHEL ships a fixed QEMU
-- [ ] Integrate tdx-measure for RTMR computation (rtmr_0, rtmr_1, rtmr_2)
+- [ ] Compute rtmr_0 (requires ACPI tables, blocked by [virtee/tdx-measure#19](https://github.com/virtee/tdx-measure/issues/19))
 - [ ] Collect hardware values (mr_seam, tcb_svn, xfam) from a running TD
 - [ ] Discover kernel command line from kata configuration instead of hardcoding
 - [ ] CGPU (Confidential GPU) support

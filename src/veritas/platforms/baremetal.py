@@ -1,8 +1,10 @@
 """Baremetal platform reference value extraction."""
 
 import hashlib
+import json
 import logging
 import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -210,6 +212,9 @@ class BaremetalExtractor(PlatformExtractor):
         if mr_td:
             values.append(mr_td)
 
+        rtmrs = self._compute_rtmrs(artifact_paths)
+        values.extend(rtmrs)
+
         return values
 
     def _compute_snp_values(self, artifact_paths: dict) -> list[ReferenceValue]:
@@ -251,6 +256,66 @@ class BaremetalExtractor(PlatformExtractor):
             algorithm="sha384",
             source="sev-snp-measure",
         )]
+
+    def _compute_rtmrs(self, artifact_paths: dict) -> list[ReferenceValue]:
+        """Compute RTMR1 and RTMR2 using tdx-measure --runtime-only."""
+        if not shutil.which("tdx-measure"):
+            log.warning("tdx-measure not found, skipping RTMR computation")
+            return []
+
+        vmlinuz = artifact_paths.get("vmlinuz")
+        initrd = artifact_paths.get("initrd")
+        if not vmlinuz or not initrd:
+            log.warning("Missing kernel or initrd, skipping RTMR computation")
+            return []
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            kernel_link = tmpdir / "vmlinuz"
+            initrd_link = tmpdir / "kata-cc.initrd"
+            kernel_link.symlink_to(vmlinuz)
+            initrd_link.symlink_to(initrd)
+
+            metadata = {
+                "direct": {
+                    "kernel": "vmlinuz",
+                    "initrd": "kata-cc.initrd",
+                    "cmdline": DEFAULT_KERNEL_CMDLINE,
+                }
+            }
+            metadata_path = tmpdir / "metadata.json"
+            metadata_path.write_text(json.dumps(metadata))
+
+            result = subprocess.run(
+                ["tdx-measure", str(metadata_path), "--runtime-only", "--json"],
+                capture_output=True, text=True,
+            )
+            if result.returncode != 0:
+                log.warning("tdx-measure failed: %s", result.stderr.strip())
+                return []
+
+            measurements = json.loads(result.stdout)
+
+        values = []
+        if measurements.get("rtmr1"):
+            values.append(ReferenceValue(
+                name="rtmr_1",
+                value=measurements["rtmr1"],
+                category="executables",
+                description="Runtime measurement register 1 (kernel + boot services)",
+                algorithm="sha384",
+                source="tdx-measure --runtime-only",
+            ))
+        if measurements.get("rtmr2"):
+            values.append(ReferenceValue(
+                name="rtmr_2",
+                value=measurements["rtmr2"],
+                category="executables",
+                description="Runtime measurement register 2 (kernel cmdline + initrd)",
+                algorithm="sha384",
+                source="tdx-measure --runtime-only",
+            ))
+        return values
 
     def _compute_mr_td(self, ovmf_path) -> ReferenceValue | None:
         """Compute mr_td from OVMF binary using TDVF descriptor."""
