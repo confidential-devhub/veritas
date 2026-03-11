@@ -18,6 +18,10 @@ def main():
     parser.add_argument("--platform", required=True, choices=EXTRACTORS.keys())
     parser.add_argument("--tee", default="tdx", choices=["tdx", "snp"])
     parser.add_argument("--authfile", help="Registry auth file for pulling images")
+    parser.add_argument("--ocp-version", action="append", dest="ocp_versions",
+                        help="OCP version (repeatable, e.g. --ocp-version 4.20.6 --ocp-version 4.20.15)")
+    parser.add_argument("--osc-version", action="append", dest="osc_versions",
+                        help="OSC dm-verity image tag (azure only, repeatable). Defaults to latest")
     parser.add_argument("--initdata", help="Path to initdata.toml for hash computation")
     parser.add_argument("-o", "--output", default=".",
                         help="Output directory (default: current directory)")
@@ -31,7 +35,12 @@ def main():
 
     try:
         extractor_cls = EXTRACTORS[args.platform]
-        extractor = extractor_cls(tee=args.tee, authfile=args.authfile)
+        kwargs = {"tee": args.tee, "authfile": args.authfile}
+        if args.ocp_versions:
+            kwargs["ocp_versions"] = args.ocp_versions
+        if args.osc_versions:
+            kwargs["osc_versions"] = args.osc_versions
+        extractor = extractor_cls(**kwargs)
         values = extractor.extract()
         if args.initdata:
             values.append(extractor.compute_initdata(args.initdata))
@@ -43,7 +52,8 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     rvps_path = output_dir / RVPS_FILENAME
-    rvps_path.write_text(format_trustee(values, extractor.platform, args.tee))
+    versions = args.ocp_versions or args.osc_versions
+    rvps_path.write_text(format_trustee(values, extractor.platform, args.tee, versions=versions))
     log.info("Written %s", rvps_path)
 
 

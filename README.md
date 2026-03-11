@@ -37,8 +37,6 @@ ready for Trustee.
 - `skopeo`: queries the registry for image digests
 - `cosign`: verifies Red Hat image signatures (Azure only)
 - `tdx-measure`: computes TDX runtime measurement registers (Baremetal TDX only, `cargo install --git https://github.com/virtee/tdx-measure tdx-measure-cli`)
-- `KUBECONFIG` environment variable pointing to the target cluster
-
 ## Install
 
 ```
@@ -52,26 +50,74 @@ pip install .[snp]
 ## Usage
 
 ```
-export KUBECONFIG=/path/to/kubeconfig
+# Baremetal TDX for a single OCP version
+veritas --platform baremetal --tee tdx --ocp-version 4.20.15 --authfile pull-secret.json
 
-# Baremetal TDX (writes ./rvps-reference-values.yaml)
-veritas --platform baremetal --tee tdx
+# Multiple OCP versions (merged into one RVPS ConfigMap)
+veritas --platform baremetal --tee tdx --ocp-version 4.20.6 --ocp-version 4.20.15 --authfile pull-secret.json
 
 # Include initdata hash
-veritas --platform baremetal --tee tdx --initdata initdata.toml
+veritas --platform baremetal --tee tdx --ocp-version 4.20.15 --authfile pull-secret.json --initdata initdata.toml
 
 # Output to a specific directory
-veritas --platform baremetal --tee tdx -o trustee-config/
+veritas --platform baremetal --tee tdx --ocp-version 4.20.15 --authfile pull-secret.json -o trustee-config/
 
-# Azure peer-pods
+# Azure peer-pods (latest dm-verity image)
 veritas --platform azure --tee tdx --authfile pull-secret.json
 
+# Azure with specific OSC versions (merged into one RVPS ConfigMap)
+veritas --platform azure --tee tdx --osc-version 1.11.0 --osc-version 1.11.1 --authfile pull-secret.json
+
 # Verbose output
-veritas --platform baremetal --tee tdx -v
+veritas --platform baremetal --tee tdx --ocp-version 4.20.15 --authfile pull-secret.json -v
 ```
 
 Output is written to the current directory by default.
 Use `-o` to specify a different directory.
+
+## Computing all supported versions
+
+Different z-stream releases may ship different artifacts, producing
+different hashes. To cover all supported versions in a single RVPS
+ConfigMap, veritas merges them into one value list per key:
+
+```json
+{
+  "name": "tdx_pcr09",
+  "value": [
+    "f831563c60f456009066a9fe...",
+    "23ab4e921bc667fbb6703e9f..."
+  ]
+}
+```
+
+The attestation policy uses set membership (`in`), so any of the
+listed values will pass verification.
+
+`compute-all.py` automates this across all supported z-stream
+versions. It reads a support matrix JSON that defines the minimum
+supported version per platform, queries the registries to discover
+every z-stream from that minimum onward, and runs veritas once per
+platform/tee with all versions merged.
+
+```
+# See which versions would be processed
+python3 scripts/compute-all.py --support-matrix osc-support-1.11.json --dry-run
+
+# Run all platforms
+python3 scripts/compute-all.py --support-matrix osc-support-1.11.json --authfile pull-secret.json
+
+# Run a single platform
+python3 scripts/compute-all.py --support-matrix osc-support-1.11.json --platform azure --authfile pull-secret.json
+
+# Save output to a specific directory
+python3 scripts/compute-all.py --support-matrix osc-support-1.11.json --authfile pull-secret.json -o results/
+```
+
+The support matrix maps platforms to their minimum z-stream versions.
+For baremetal, these are OCP versions. For azure, these are OSC
+operator versions (the dm-verity image is tied to the operator
+release, not OCP). See `osc-support-*.json` for the current matrix.
 
 ## Default policy coverage
 
@@ -248,10 +294,16 @@ not match.
 
 ## TODO
 
+### High priority
+
+- [x] Remove cluster dependency: resolve extension image by OCP version, verify release payload, no kubeconfig needed.
+- [ ] Add `--kernel-cmdline` flag and document how users can get the current cmdline (kata config on node, `nr_cpus` added at runtime per pod CPU request)
+
+### Other
+
 - [ ] Remove vendored QEMU patching logic once RHEL ships a fixed QEMU
 - [ ] Compute rtmr_0 (requires ACPI tables, blocked by [virtee/tdx-measure#19](https://github.com/virtee/tdx-measure/issues/19))
 - [ ] Collect hardware values (xfam) from a running TD
-- [ ] Discover kernel command line from kata configuration instead of hardcoding
 - [ ] Investigate downstream policy PCR checks ([openshift/trustee-operator#291](https://github.com/openshift/trustee-operator/pull/291)): adds pcr03, pcr08, pcr09, pcr12 for Azure SNP/TDX
 - [ ] CI: validate RVPS keys against policy using OPA (detect missing keys and unused keys)
 - [ ] CGPU (Confidential GPU) support

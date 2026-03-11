@@ -36,11 +36,12 @@ class AzureExtractor(PlatformExtractor):
         "snp": "az_snp_vtpm",
     }
 
-    def __init__(self, tee, authfile=None):
+    def __init__(self, tee, authfile=None, osc_versions=None):
         if tee not in self.EVIDENCE_TYPES:
             raise ValueError(f"Unknown TEE: {tee}. Must be one of {list(self.EVIDENCE_TYPES)}")
         self.tee = tee
-        self.image = ContainerImage(self.IMAGE_REPO, authfile=authfile)
+        self.authfile = authfile
+        self.osc_versions = osc_versions or ["latest"]
 
     @property
     def platform(self) -> str:
@@ -51,15 +52,29 @@ class AzureExtractor(PlatformExtractor):
         return self.EVIDENCE_TYPES[self.tee]
 
     def extract(self) -> list[ReferenceValue]:
-        """Verify, pull dm-verity image, and parse measurements.json."""
-        image_ref = self.image.get_pinned_reference()
-        log.info("Image: %s", image_ref)
-        log.info("Verifying image signature...")
-        self.image.verify(image_ref)
-        log.info("Signature verified.")
-        self.image.pull(image_ref)
-        raw = self.image.extract_file(image_ref, self.MEASUREMENTS_PATH)
-        return self._parse_measurements(json.loads(raw))
+        """Verify, pull dm-verity image(s), and parse measurements.json."""
+        merged = {}
+        for tag in self.osc_versions:
+            log.info("Processing OSC %s", tag)
+            image = ContainerImage(self.IMAGE_REPO, tag=tag, authfile=self.authfile)
+            image_ref = image.get_pinned_reference()
+            log.info("Image: %s", image_ref)
+            log.info("Verifying image signature...")
+            image.verify(image_ref)
+            log.info("Signature verified.")
+            image.pull(image_ref)
+            raw = image.extract_file(image_ref, self.MEASUREMENTS_PATH)
+            values = self._parse_measurements(json.loads(raw))
+
+            for v in values:
+                if v.name in merged:
+                    for val in v.values:
+                        if val not in merged[v.name].values:
+                            merged[v.name].values.append(val)
+                else:
+                    merged[v.name] = v
+
+        return list(merged.values())
 
     def compute_initdata(self, initdata_path: str) -> ReferenceValue:
         """Compute PCR8: sha256(32_zero_bytes || sha256(initdata_content))."""
@@ -68,7 +83,7 @@ class AzureExtractor(PlatformExtractor):
         outer = hashlib.sha256(b"\x00" * 32 + inner).hexdigest()
         return ReferenceValue(
             name=self._rvps_key("pcr08"),
-            value=outer,
+            values=[outer],
             category="configuration",
             description="Init data (initdata.toml extended into PCR8)",
             algorithm="sha256",
@@ -89,7 +104,7 @@ class AzureExtractor(PlatformExtractor):
                 continue
             values.append(ReferenceValue(
                 name=self._rvps_key(name),
-                value=raw_value.lstrip("0x"),
+                values=[raw_value.lstrip("0x")],
                 category="executables",
                 description=description,
                 algorithm="sha256",

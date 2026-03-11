@@ -3,7 +3,6 @@
 import hashlib
 import json
 import logging
-import os
 import shutil
 import subprocess
 import tempfile
@@ -43,14 +42,16 @@ class BaremetalExtractor(PlatformExtractor):
     EDK2_RPM_GLOB = "edk2-ovmf-*.rpm"
     EXTENSIONS_PATH = "/usr/share/rpm-ostree/extensions"
 
-    def __init__(self, tee, authfile=None):
+    OCP_RELEASE_REPO = "quay.io/openshift-release-dev/ocp-release"
+
+    def __init__(self, tee, authfile=None, ocp_versions=None):
         if tee not in self.EVIDENCE_TYPES:
             raise ValueError(f"Unknown TEE: {tee}. Must be one of {list(self.EVIDENCE_TYPES)}")
+        if not ocp_versions:
+            raise ValueError("At least one --ocp-version is required for baremetal")
         self.tee = tee
         self.authfile = authfile
-        self.kubeconfig = os.environ.get("KUBECONFIG")
-        if not self.kubeconfig:
-            raise RuntimeError("KUBECONFIG environment variable is not set")
+        self.ocp_versions = ocp_versions
 
     @property
     def platform(self) -> str:
@@ -61,14 +62,27 @@ class BaremetalExtractor(PlatformExtractor):
         return self.EVIDENCE_TYPES[self.tee]
 
     def extract(self) -> list[ReferenceValue]:
-        """Resolve extensions image, extract RPMs, and compute hashes."""
-        image_ref = self._get_extensions_image()
-        log.info("Extensions image: %s", image_ref)
-        self._pull_image(image_ref)
+        """Resolve extensions image per OCP version, extract RPMs, and compute hashes."""
+        merged = {}
+        for version in self.ocp_versions:
+            log.info("Processing OCP %s", version)
+            self._verify_release(version)
+            image_ref = self._get_extensions_image(version)
+            log.info("Extensions image: %s", image_ref)
+            self._pull_image(image_ref)
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            self._extract_extensions(image_ref, tmpdir)
-            return self._extract_and_compute(tmpdir)
+            with tempfile.TemporaryDirectory() as tmpdir:
+                self._extract_extensions(image_ref, tmpdir)
+                values = self._extract_and_compute(tmpdir)
+
+            for v in values:
+                if v.name in merged:
+                    for val in v.values:
+                        if val not in merged[v.name].values:
+                            merged[v.name].values.append(val)
+                else:
+                    merged[v.name] = v
+        return list(merged.values())
 
     def compute_initdata(self, initdata_path: str) -> ReferenceValue:
         """Compute initdata hash for baremetal TDX (sha384)."""
@@ -76,21 +90,38 @@ class BaremetalExtractor(PlatformExtractor):
         digest = hashlib.sha384(content).hexdigest()
         return ReferenceValue(
             name="init_data",
-            value=digest,
+            values=[digest],
             category="configuration",
             description="Init data hash",
             algorithm="sha384",
             source="computed from initdata.toml",
         )
 
-    def _get_extensions_image(self) -> str:
-        """Get rhel-coreos-extensions image ref from the OCP release."""
-        result = subprocess.run(
-            ["oc", "adm", "release", "info", "--image-for=rhel-coreos-extensions"],
-            capture_output=True, text=True,
-        )
+    def _verify_release(self, ocp_version: str):
+        """Verify the OCP release payload integrity."""
+        release_image = f"{self.OCP_RELEASE_REPO}:{ocp_version}-x86_64"
+        cmd = ["oc", "adm", "release", "info", "--verify", release_image]
+        if self.authfile:
+            cmd.extend(["-a", self.authfile])
+        log.info("Verifying OCP %s release payload...", ocp_version)
+        result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
-            raise RuntimeError(f"Failed to get extensions image:\n{result.stderr}")
+            raise RuntimeError(f"Release verification failed for OCP {ocp_version}:\n{result.stderr}")
+        log.info("Release verified: %s", result.stdout.strip())
+
+    def _get_extensions_image(self, ocp_version: str) -> str:
+        """Get rhel-coreos-extensions image ref from the OCP release."""
+        release_image = f"{self.OCP_RELEASE_REPO}:{ocp_version}-x86_64"
+        cmd = [
+            "oc", "adm", "release", "info",
+            "--image-for=rhel-coreos-extensions",
+            release_image,
+        ]
+        if self.authfile:
+            cmd.extend(["-a", self.authfile])
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"Failed to get extensions image for OCP {ocp_version}:\n{result.stderr}")
         return result.stdout.strip()
 
     def _pull_image(self, image_ref):
@@ -177,7 +208,7 @@ class BaremetalExtractor(PlatformExtractor):
             )
             values.append(ReferenceValue(
                 name="tdvfkernel",
-                value=digest,
+                values=[digest],
                 category="executables",
                 description="Kernel binary (vmlinuz) digest from UEFI event log",
                 algorithm="sha384",
@@ -189,7 +220,7 @@ class BaremetalExtractor(PlatformExtractor):
         ).hexdigest()
         values.append(ReferenceValue(
             name="tdvfkernelparams",
-            value=cmdline_hash,
+            values=[cmdline_hash],
             category="executables",
             description="Kernel command line (UTF-16-LE) digest from UEFI event log",
             algorithm="sha384",
@@ -201,7 +232,7 @@ class BaremetalExtractor(PlatformExtractor):
             initrd_hash = hashlib.sha384(initrd_data).hexdigest()
             values.append(ReferenceValue(
                 name="initrd",
-                value=initrd_hash,
+                values=[initrd_hash],
                 category="executables",
                 description="Initrd (kata-cc.initrd) digest from UEFI event log",
                 algorithm="sha384",
@@ -250,7 +281,7 @@ class BaremetalExtractor(PlatformExtractor):
 
         return [ReferenceValue(
             name="snp_launch_measurement",
-            value=measurement,
+            values=[measurement],
             category="executables",
             description="SNP launch measurement (OVMF + kernel + initrd + cmdline)",
             algorithm="sha384",
@@ -300,7 +331,7 @@ class BaremetalExtractor(PlatformExtractor):
         if measurements.get("rtmr1"):
             values.append(ReferenceValue(
                 name="rtmr_1",
-                value=measurements["rtmr1"],
+                values=[measurements["rtmr1"]],
                 category="executables",
                 description="Runtime measurement register 1 (kernel + boot services)",
                 algorithm="sha384",
@@ -309,7 +340,7 @@ class BaremetalExtractor(PlatformExtractor):
         if measurements.get("rtmr2"):
             values.append(ReferenceValue(
                 name="rtmr_2",
-                value=measurements["rtmr2"],
+                values=[measurements["rtmr2"]],
                 category="executables",
                 description="Runtime measurement register 2 (kernel cmdline + initrd)",
                 algorithm="sha384",
@@ -329,7 +360,7 @@ class BaremetalExtractor(PlatformExtractor):
         log.info("mr_td: %s", mr_td_value)
         return ReferenceValue(
             name="mr_td",
-            value=mr_td_value,
+            values=[mr_td_value],
             category="executables",
             description="TD build-time measurement (OVMF/TDVF)",
             algorithm="sha384",
