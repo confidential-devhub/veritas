@@ -73,35 +73,46 @@ veritas --platform baremetal --tee tdx -v
 Output is written to the current directory by default.
 Use `-o` to specify a different directory.
 
-## What it computes
+## Default policy coverage
 
-| <div style="width:300px">Component</div> | Azure (SHA-256) | Baremetal TDX (SHA-384) | Baremetal SNP (SHA-384) |
-|---|---|---|---|
-| 🟢 💾 Firmware (OVMF) | pcr03 | mr_td | *combined in `measurement`* |
-| 🟢 💾 Kernel ¹ | | tdvfkernel | *combined in `measurement`* |
-| 🟢 💾 Kernel cmdline ² | | tdvfkernelparams | *combined in `measurement`* |
-| 🟢 💾 Initrd | pcr09 | initrd | *combined in `measurement`* |
-| 🔴 💾 Runtime register 0 ³ | | rtmr_0 | |
-| 🟢 💾 Runtime register 1 | | rtmr_1 | |
-| 🟢 💾 Runtime register 2 | | rtmr_2 | |
-| 🟢 💾 UKI bundle | pcr11 | | |
-| 🟢 💾 Credentials | pcr12 | | |
-| 🟢 💾 Launch digest | | | measurement |
-| 🟢 ⚙️ Init data | pcr08 | init_data (mr_config_id) | init_data |
-| 🔴 🔒 TEE type | | tee_type | |
-| 🔴 🔒 Vendor ID | | vendor_id | |
-| 🔴 🔒 TCB status | | tcb_status | |
-| 🔴 🔒 Collateral expiry | | collateral_expiration_status | |
-| 🔴 🔒 CPU features | | xfam | |
-| 🔴 🔒 TCB version | | | reported_tcb_* |
-| 🔴 🔒 Debug policy | | td_attributes | policy_debug_allowed |
-| 🔴 🔒 SMT policy | | | platform_smt_enabled |
+Maps each value checked by the [upstream default Rego policy](https://github.com/confidential-containers/trustee/blob/main/attestation-service/src/token/ear_default_policy_cpu.rego) to what veritas can provide today. Each cell shows the RVPS key name and whether veritas computes it, the policy hardcodes it, or it's still missing.
 
-🟢 supported by veritas · 🔴 not yet supported
+| Policy check | Baremetal TDX (SHA-384) | Baremetal SNP (SHA-384) | Azure TDX (SHA-256) | Azure SNP (SHA-256) |
+|---|---|---|---|---|
+| 💾 Firmware (OVMF) | ✅ mr_td | ~~part of measur.~~ | ✅ mr_td | ~~pcr03 (part of measur.)~~ |
+| 💾 Launch digest | - | ✅ measurement | - | ✅ measurement |
+| 💾 Kernel ¹ | ✅ tdvfkernel | ~~part of measur.~~ | - | - |
+| 💾 Kernel cmdline ² | ✅ tdvfkernelparams | ~~part of measur.~~ | - | - |
+| 💾 Initrd | ~~initrd~~ | ~~part of measur.~~ | ~~pcr09~~ | ~~pcr09~~ |
+| 💾 Runtime register 0 ³ | ~~rtmr_0~~ | - | - | - |
+| 💾 Runtime register 1 | ✅ rtmr_1 | - | - | - |
+| 💾 Runtime register 2 | ✅ rtmr_2 | - | - | - |
+| 💾 UKI bundle | - | - | ✅ pcr11 | ✅ pcr11 |
+| 💾 Credentials | ~~pcr12~~ | - | ~~pcr12~~ | ~~pcr12~~ |
+| ⚙️ Init data | ~~init_data (mr_config_id)~~ | ~~init_data~~ | ~~pcr08~~ | ~~pcr08~~ |
+| 📋 TEE type | *"81000000"* | - | *"81000000"* | - |
+| 📋 Vendor ID | *"939a72..."* | - | *"939a72..."* | - |
+| 📋 TCB status | *"UpToDate"* | - | - | - |
+| 📋 Collateral expiry | *"0"* | - | - | - |
+| 📋 Debug policy | *false* | *false* | - | - |
+| 📋 Migration policy | - | *false* | - | - |
+| 🔒 CPU features (xfam) | 🔴 xfam | - | 🔴 xfam | - |
+| 🔒 TCB version | - | 🔴 reported_tcb_* | - | 🔴 reported_tcb_* |
+| 🔒 SMT policy | - | 🔴 platform_smt_enabled | - | 🔴 smt_enabled |
+| 🔒 TSME | - | 🔴 platform_tsme_enabled | - | 🔴 tsme_enabled |
+| 🔒 Guest ABI | - | 🔴 policy_abi_major/minor | - | 🔴 abi_major/minor |
+| 🔒 Single socket | - | 🔴 policy_single_socket | - | 🔴 single_socket |
+| 🔒 SMT allowed | - | 🔴 policy_smt_allowed | - | 🔴 smt_allowed |
 
-💾 software: pre-computable from cluster artifacts
-⚙️ user config: computed from user-provided input (e.g. initdata.toml)
-🔒 hardware: can't be pre-computed, must come from a live TD quote
+✅ veritas computes<br>
+🔴 not yet provided<br>
+~~strikethrough~~ not individually checked (may be part of a combined value)<br>
+\- does not exist
+
+💾 software: pre-computable from artifacts<br>
+⚙️ user config<br>
+📋 policy checks against hardcoded values (no RVPS reference needed)<br>
+🔒 hardware: needs live quote
 
 <small><i>¹ QEMU patches the kernel setup header (memory addresses, initrd location) before OVMF measures it. The hash depends on the VM memory layout, which may vary with different kata configurations. This is a known QEMU bug, already fixed upstream but not yet in RHEL. Once RHEL picks up the fix, a plain PE hash of vmlinuz will match.</i></small>
 
@@ -242,6 +253,7 @@ not match.
 - [ ] Collect hardware values (xfam) from a running TD
 - [ ] Discover kernel command line from kata configuration instead of hardcoding
 - [ ] Verify Azure RVPS key names match upstream policy expectations (e.g. `pcr11` vs `tdx_pcr11`)
+- [ ] Investigate downstream policy PCR checks ([openshift/trustee-operator#291](https://github.com/openshift/trustee-operator/pull/291)): adds pcr3, pcr8, pcr9, pcr12 for Azure SNP/TDX with `snp_`/`tdx_` prefixed key names
 - [ ] CGPU (Confidential GPU) support
 
 ## License
