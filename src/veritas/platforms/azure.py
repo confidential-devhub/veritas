@@ -67,13 +67,17 @@ class AzureExtractor(PlatformExtractor):
         inner = hashlib.sha256(content).digest()
         outer = hashlib.sha256(b"\x00" * 32 + inner).hexdigest()
         return ReferenceValue(
-            name="pcr08",
+            name=self._rvps_key("pcr08"),
             value=outer,
             category="configuration",
             description="Init data (initdata.toml extended into PCR8)",
             algorithm="sha256",
             source="computed from initdata.toml",
         )
+
+    def _rvps_key(self, pcr_name: str) -> str:
+        """Convert pcr name to RVPS key: pcr03 -> snp_pcr03 or tdx_pcr03."""
+        return f"{self.tee}_{pcr_name}"
 
     def _parse_measurements(self, measurements: dict) -> list[ReferenceValue]:
         """Convert measurements.json to ReferenceValues."""
@@ -84,7 +88,7 @@ class AzureExtractor(PlatformExtractor):
             if raw_value is None:
                 continue
             values.append(ReferenceValue(
-                name=name,
+                name=self._rvps_key(name),
                 value=raw_value.lstrip("0x"),
                 category="executables",
                 description=description,

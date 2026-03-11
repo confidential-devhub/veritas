@@ -249,7 +249,7 @@ class BaremetalExtractor(PlatformExtractor):
         log.info("SNP measurement: %s", measurement)
 
         return [ReferenceValue(
-            name="measurement",
+            name="snp_launch_measurement",
             value=measurement,
             category="executables",
             description="SNP launch measurement (OVMF + kernel + initrd + cmdline)",

@@ -79,17 +79,17 @@ Maps each value checked by the [upstream default Rego policy](https://github.com
 
 | Policy check | Baremetal TDX (SHA-384) | Baremetal SNP (SHA-384) | Azure TDX (SHA-256) | Azure SNP (SHA-256) |
 |---|---|---|---|---|
-| 💾 Firmware (OVMF) | ✅ mr_td | ~~part of measur.~~ | ✅ mr_td | ~~pcr03 (part of measur.)~~ |
-| 💾 Launch digest | - | ✅ measurement | - | ✅ measurement |
+| 💾 Firmware (OVMF) | ✅ mr_td | ~~part of measur.~~ | ✅ mr_td | ~~snp_pcr03 (part of measur.)~~ |
+| 💾 Launch digest | - | ✅ snp_launch_measurement | - | ✅ measurement |
 | 💾 Kernel ¹ | ✅ tdvfkernel | ~~part of measur.~~ | - | - |
 | 💾 Kernel cmdline ² | ✅ tdvfkernelparams | ~~part of measur.~~ | - | - |
-| 💾 Initrd | ~~initrd~~ | ~~part of measur.~~ | ~~pcr09~~ | ~~pcr09~~ |
+| 💾 Initrd | ~~initrd~~ | ~~part of measur.~~ | ~~tdx_pcr09~~ | ~~snp_pcr09~~ |
 | 💾 Runtime register 0 ³ | ~~rtmr_0~~ | - | - | - |
 | 💾 Runtime register 1 | ✅ rtmr_1 | - | - | - |
 | 💾 Runtime register 2 | ✅ rtmr_2 | - | - | - |
-| 💾 UKI bundle | - | - | ✅ pcr11 | ✅ pcr11 |
-| 💾 Credentials | ~~pcr12~~ | - | ~~pcr12~~ | ~~pcr12~~ |
-| ⚙️ Init data | ~~init_data (mr_config_id)~~ | ~~init_data~~ | ~~pcr08~~ | ~~pcr08~~ |
+| 💾 UKI bundle | - | - | ✅ tdx_pcr11 | ✅ snp_pcr11 |
+| 💾 Credentials | ~~pcr12~~ | - | ~~tdx_pcr12~~ | ~~snp_pcr12~~ |
+| ⚙️ Init data | ~~init_data (mr_config_id)~~ | ~~init_data~~ | ~~tdx_pcr08~~ | ~~snp_pcr08~~ |
 | 📋 TEE type | *"81000000"* | - | *"81000000"* | - |
 | 📋 Vendor ID | *"939a72..."* | - | *"939a72..."* | - |
 | 📋 TCB status | *"UpToDate"* | - | - | - |
@@ -192,28 +192,28 @@ data:
   reference-values: |
     [
       {
-        "name": "pcr03",
+        "name": "tdx_pcr03",
         "expiration": "2099-12-31T00:00:00Z",
         "value": [
           "3d458cfe55cc03ea1f443f1562beec8df51c75e14a9fcf9a..."
         ]
       },
       {
-        "name": "pcr09",
+        "name": "tdx_pcr09",
         "expiration": "2099-12-31T00:00:00Z",
         "value": [
           "23ab4e921bc667fbb6703e9fbac6112a4857b37419d9faf9..."
         ]
       },
       {
-        "name": "pcr11",
+        "name": "tdx_pcr11",
         "expiration": "2099-12-31T00:00:00Z",
         "value": [
           "d8a8eb2a682a687d879b48f8277d06fa16fed1b36d054d55..."
         ]
       },
       {
-        "name": "pcr12",
+        "name": "tdx_pcr12",
         "expiration": "2099-12-31T00:00:00Z",
         "value": [
           "c1399c6e0f06bd74e43d3b3b474a97df09aa0d4e2f603e8f..."
@@ -252,8 +252,8 @@ not match.
 - [ ] Compute rtmr_0 (requires ACPI tables, blocked by [virtee/tdx-measure#19](https://github.com/virtee/tdx-measure/issues/19))
 - [ ] Collect hardware values (xfam) from a running TD
 - [ ] Discover kernel command line from kata configuration instead of hardcoding
-- [ ] Verify Azure RVPS key names match upstream policy expectations (e.g. `pcr11` vs `tdx_pcr11`)
-- [ ] Investigate downstream policy PCR checks ([openshift/trustee-operator#291](https://github.com/openshift/trustee-operator/pull/291)): adds pcr3, pcr8, pcr9, pcr12 for Azure SNP/TDX with `snp_`/`tdx_` prefixed key names
+- [ ] Investigate downstream policy PCR checks ([openshift/trustee-operator#291](https://github.com/openshift/trustee-operator/pull/291)): adds pcr03, pcr08, pcr09, pcr12 for Azure SNP/TDX
+- [ ] CI: validate RVPS keys against policy using OPA (detect missing keys and unused keys)
 - [ ] CGPU (Confidential GPU) support
 
 ## License
