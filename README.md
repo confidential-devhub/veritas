@@ -90,11 +90,10 @@ Use `-o` to specify a different directory.
 | 🟢 ⚙️ Init data | pcr08 | init_data (mr_config_id) | init_data |
 | 🔴 🔒 TEE type | | tee_type | |
 | 🔴 🔒 Vendor ID | | vendor_id | |
-| 🔴 🔒 TEE firmware | | mr_seam | |
-| 🔴 🔒 TCB version | | tcb_svn | reported_tcb_* |
 | 🔴 🔒 TCB status | | tcb_status | |
 | 🔴 🔒 Collateral expiry | | collateral_expiration_status | |
 | 🔴 🔒 CPU features | | xfam | |
+| 🔴 🔒 TCB version | | | reported_tcb_* |
 | 🔴 🔒 Debug policy | | td_attributes | policy_debug_allowed |
 | 🔴 🔒 SMT policy | | | platform_smt_enabled |
 
@@ -226,10 +225,9 @@ Once RHEL ships a newer QEMU that skips patching for TDX guests
 (already fixed upstream), this vendored code can be removed and
 a plain hash of vmlinuz will suffice.
 
-**Hardware values are not collected.** Values like mr_seam, tcb_svn,
-and xfam come from the TDX hardware or AMD platform and cannot be
-pre-computed. They must be captured from a running TD or SNP guest
-and added to the RVPS manually.
+**Hardware values are not collected.** Values like xfam come from the
+TDX hardware and cannot be pre-computed. They must be captured from a
+running TD and added to the RVPS manually.
 
 **Kernel command line is hardcoded.** The kata kernel command line is
 assembled at runtime from multiple source files in the kata-containers
@@ -241,7 +239,7 @@ not match.
 
 - [ ] Remove vendored QEMU patching logic once RHEL ships a fixed QEMU
 - [ ] Compute rtmr_0 (requires ACPI tables, blocked by [virtee/tdx-measure#19](https://github.com/virtee/tdx-measure/issues/19))
-- [ ] Collect hardware values (mr_seam, tcb_svn, xfam) from a running TD
+- [ ] Collect hardware values (xfam) from a running TD
 - [ ] Discover kernel command line from kata configuration instead of hardcoding
 - [ ] Verify Azure RVPS key names match upstream policy expectations (e.g. `pcr11` vs `tdx_pcr11`)
 - [ ] CGPU (Confidential GPU) support
