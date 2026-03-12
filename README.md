@@ -29,8 +29,7 @@ them ready for Trustee.
 
 ## Prerequisites
 
-- `oc`: resolves the rhel-coreos-extensions image reference from the OCP release
-- `podman`: pulls container images and extracts RPMs and artifacts
+- `oc`: resolves and extracts the rhel-coreos-extensions image from the OCP release
 - `skopeo`: queries the registry for image digests
 - `cosign`: verifies Red Hat image signatures (Azure only)
 - `tdx-measure`: computes TDX runtime measurement registers (Baremetal TDX only, `cargo install --git https://github.com/virtee/tdx-measure tdx-measure-cli`)

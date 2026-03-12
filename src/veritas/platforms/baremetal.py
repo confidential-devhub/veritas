@@ -82,7 +82,6 @@ class BaremetalExtractor(PlatformExtractor):
             self._verify_release(version)
             image_ref = self._get_extensions_image(version)
             log.info("Extensions image: %s", image_ref)
-            self._pull_image(image_ref)
 
             with tempfile.TemporaryDirectory() as tmpdir:
                 self._extract_extensions(image_ref, tmpdir)
@@ -137,29 +136,18 @@ class BaremetalExtractor(PlatformExtractor):
             raise RuntimeError(f"Failed to get extensions image for OCP {ocp_version}:\n{result.stderr}")
         return result.stdout.strip()
 
-    def _pull_image(self, image_ref):
-        """Pull the extensions image."""
-        cmd = ["podman", "pull", image_ref]
+    def _extract_extensions(self, image_ref, dest_dir):
+        """Extract the RPM extensions directory from the image using oc."""
+        cmd = [
+            "oc", "image", "extract", image_ref,
+            f"--path={self.EXTENSIONS_PATH}/:{dest_dir}",
+        ]
         if self.authfile:
-            cmd.extend(["--authfile", self.authfile])
-        log.info("Pulling %s", image_ref)
+            cmd.extend(["-a", self.authfile])
+        log.info("Extracting extensions from %s", image_ref)
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
-            raise RuntimeError(f"Failed to pull image:\n{result.stderr}")
-
-    def _extract_extensions(self, image_ref, dest_dir):
-        """Extract the RPM extensions directory from the image."""
-        cid = subprocess.run(
-            ["podman", "create", "--entrypoint", "/bin/true", image_ref],
-            capture_output=True, text=True,
-        ).stdout.strip()
-        try:
-            subprocess.run(
-                ["podman", "cp", f"{cid}:{self.EXTENSIONS_PATH}/.", dest_dir],
-                capture_output=True, text=True, check=True,
-            )
-        finally:
-            subprocess.run(["podman", "rm", cid], capture_output=True)
+            raise RuntimeError(f"Failed to extract extensions:\n{result.stderr}")
 
     def _extract_and_compute(self, extensions_dir) -> list[ReferenceValue]:
         """Extract RPMs, find artifacts, and compute values."""
