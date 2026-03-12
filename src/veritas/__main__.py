@@ -22,6 +22,13 @@ def main():
                         help="OCP version (repeatable, e.g. --ocp-version 4.20.6 --ocp-version 4.20.15)")
     parser.add_argument("--osc-version", action="append", dest="osc_versions",
                         help="OSC dm-verity image tag (azure only, repeatable). Defaults to latest")
+    parser.add_argument("--kernel-cmdline",
+                        help="Override kernel command line (baremetal only). "
+                        "When set, computes a single measurement value instead of "
+                        "one per CPU count. Default: kata default cmdline with nr_cpus=1..N")
+    parser.add_argument("--max-cpu-count", type=int, default=32,
+                        help="Max nr_cpus to generate cmdline variants for (default: 32, "
+                        "ignored when --kernel-cmdline is set)")
     parser.add_argument("--initdata", help="Path to initdata.toml for hash computation")
     parser.add_argument("--hw-xfam",
                         help="TDX XFAM value from a live quote (TDX only, e.g. e702060000000000)")
@@ -42,6 +49,9 @@ def main():
             kwargs["ocp_versions"] = args.ocp_versions
         if args.osc_versions:
             kwargs["osc_versions"] = args.osc_versions
+        if args.platform == "baremetal":
+            kwargs["kernel_cmdline"] = args.kernel_cmdline
+            kwargs["max_cpu_count"] = args.max_cpu_count
         extractor = extractor_cls(**kwargs)
         values = extractor.extract()
         if args.initdata:

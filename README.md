@@ -130,9 +130,9 @@ Maps each value checked by the [upstream default Rego policy](https://github.com
 | 💾 Firmware (OVMF) | ✅ mr_td | ~~part of measur.~~ | ✅ mr_td | ~~snp_pcr03 (part of measur.)~~ |
 | 💾 Launch digest | - | ✅ snp_launch_measurement | - | ✅ measurement |
 | 💾 Kernel ¹ | ✅ tdvfkernel | ~~part of measur.~~ | - | - |
-| 💾 Kernel cmdline ² | ✅ tdvfkernelparams | ~~part of measur.~~ | - | - |
+| 💾 Kernel cmdline | ✅ tdvfkernelparams | ~~part of measur.~~ | - | - |
 | 💾 Initrd | ~~initrd~~ | ~~part of measur.~~ | ~~tdx_pcr09~~ | ~~snp_pcr09~~ |
-| 💾 Runtime register 0 ³ | ~~rtmr_0~~ | - | - | - |
+| 💾 Runtime register 0 ² | ~~rtmr_0~~ | - | - | - |
 | 💾 Runtime register 1 | ✅ rtmr_1 | - | - | - |
 | 💾 Runtime register 2 | ✅ rtmr_2 | - | - | - |
 | 💾 UKI bundle | - | - | ✅ tdx_pcr11 | ✅ snp_pcr11 |
@@ -162,7 +162,7 @@ Maps each value checked by the [upstream default Rego policy](https://github.com
 📋 policy checks against hardcoded values (no RVPS reference needed)<br>
 🔒 hardware: needs live quote (collect once, pass via `--hw-*` flags)
 
-### Being removed from upstream policy ⁴
+### Being removed from upstream policy
 
 These checks are being removed from the upstream default Rego policy.
 Veritas does not output them.
@@ -174,11 +174,7 @@ Veritas does not output them.
 
 <small><i>¹ QEMU patches the kernel setup header (memory addresses, initrd location) before OVMF measures it. The hash depends on the VM memory layout, which may vary with different kata configurations. This is a known QEMU bug, already fixed upstream but not yet in RHEL. Once RHEL picks up the fix, a plain PE hash of vmlinuz will match.</i></small>
 
-<small><i>² The kernel command line includes nr_cpus=N which kata sets based on the pod's CPU resource request. A pod requesting 4 CPUs will have a different hash than one requesting 1. Veritas currently hardcodes nr_cpus=1. This is unrelated to the QEMU bug and will remain an issue until the cmdline is discovered dynamically or multiple reference values are supported for different CPU counts.</i></small>
-
-<small><i>³ rtmr_0 accumulates firmware configuration events (TD HOB, CFV, SecureBoot variables, ACPI tables). Computing it offline requires the exact ACPI tables that QEMU generates at VM creation time. tdx-measure can generate these but only for Ubuntu, not RHEL. See [virtee/tdx-measure#19](https://github.com/virtee/tdx-measure/issues/19).</i></small>
-
-<small><i>⁴ tcb_svn is already implicitly verified by the DCAP verifier as part of tcb_status, making the explicit RVPS check redundant. mr_seam (the TDX module hash) is published per version at [intel/confidential-computing.tdx.tdx-module](https://github.com/intel/confidential-computing.tdx.tdx-module/releases) but is impractical to discover from the BIOS vendor in practice, and is also covered by tcb_status. Both are planned to be removed from the upstream default policy.</i></small>
+<small><i>² rtmr_0 accumulates firmware configuration events (TD HOB, CFV, SecureBoot variables, ACPI tables). Computing it offline requires the exact ACPI tables that QEMU generates at VM creation time. tdx-measure can generate these but only for Ubuntu, not RHEL. See [virtee/tdx-measure#19](https://github.com/virtee/tdx-measure/issues/19).</i></small>
 
 ## Output example
 
@@ -205,7 +201,9 @@ data:
         "name": "tdvfkernelparams",
         "expiration": "2099-12-31T00:00:00Z",
         "value": [
-          "2314211f527fb49d1e548228084c444dfe1c5221bd2f411f..."
+          "2314211f527fb49d1e548228084c444dfe1c5221bd2f411f...",
+          "a1b2c3d4e5f6...",
+          "... (one per nr_cpus=1..32)"
         ]
       },
       {
@@ -226,14 +224,16 @@ data:
         "name": "rtmr_1",
         "expiration": "2099-12-31T00:00:00Z",
         "value": [
-          "bc875efe0e9f991c6072e3e1422e5e66e0e23c0addeaab16..."
+          "bc875efe0e9f991c6072e3e1422e5e66e0e23c0addeaab16...",
+          "... (one per nr_cpus, see 'Kernel command line and CPU counts')"
         ]
       },
       {
         "name": "rtmr_2",
         "expiration": "2099-12-31T00:00:00Z",
         "value": [
-          "3c764645b39c6402b5c9f2df3d32eedf3b880ebc9de89bf3..."
+          "3c764645b39c6402b5c9f2df3d32eedf3b880ebc9de89bf3...",
+          "... (one per nr_cpus)"
         ]
       },
       {
@@ -318,6 +318,43 @@ configuration. It only needs to be collected once per hardware platform.
 > live TD (see "Collecting hardware values" above), or customize the
 > attestation policy to skip the xfam check.
 
+## Kernel command line and CPU counts
+
+The kernel command line is part of the attestation measurement. Kata
+assembles it at VM creation time, and one of the parameters is
+`nr_cpus=N`, which varies based on the pod's CPU resource request.
+A pod requesting 4 CPUs will produce a different measurement than
+one requesting 1.
+
+By default, veritas generates reference values for every CPU count
+from 1 to 32. This means cmdline-dependent keys (`tdvfkernelparams`,
+`rtmr_1`, `rtmr_2` for TDX; `snp_launch_measurement` for SNP) will
+have up to 32 values each. The attestation policy uses set membership
+(`in`), so a pod with any CPU count in that range will pass.
+
+To change the range, use `--max-cpu-count`:
+
+```
+# Generate for nr_cpus=1..8 instead of 1..32
+veritas --platform baremetal --tee tdx --ocp-version 4.20.15 --authfile pull-secret.json --max-cpu-count 8
+```
+
+If your deployment uses a custom kernel command line (modified kata
+configuration on the node), use `--kernel-cmdline` to pass the exact
+string. This produces a single measurement value and skips the CPU
+count iteration:
+
+```
+veritas --platform baremetal --tee tdx --ocp-version 4.20.15 --authfile pull-secret.json \
+  --kernel-cmdline "tsc=reliable no_timer_check ... nr_cpus=4 ..."
+```
+
+To find the current kernel command line on a node, check the kata
+configuration at `/opt/kata/share/defaults/kata-containers/configuration-*.toml`
+(the `kernel_params` field). Note that kata appends `nr_cpus=N` at
+runtime based on the pod spec, so the config file alone is not the
+complete cmdline.
+
 ## Known limitations
 
 **tdvfkernel uses vendored patching logic.** RHEL's QEMU 9.1.0
@@ -330,19 +367,13 @@ Once RHEL ships a newer QEMU that skips patching for TDX guests
 (already fixed upstream), this vendored code can be removed and
 a plain hash of vmlinuz will suffice.
 
-**Kernel command line is hardcoded.** The kata kernel command line is
-assembled at runtime from multiple source files in the kata-containers
-repository. Veritas uses the known default value. If your deployment
-customizes the kernel command line, the tdvfkernelparams hash will
-not match.
-
 ## TODO
 
 ### High priority
 
 - [x] Remove cluster dependency: resolve extension image by OCP version, verify release payload, no kubeconfig needed
 - [x] Support multiple OCP/OSC versions with merged reference values
-- [ ] Add `--kernel-cmdline` flag and document how users can get the current cmdline (kata config on node, `nr_cpus` added at runtime per pod CPU request)
+- [x] Add `--kernel-cmdline` flag and `--max-cpu-count` for cmdline-dependent measurements
 
 ### Other
 

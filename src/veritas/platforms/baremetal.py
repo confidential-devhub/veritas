@@ -16,18 +16,15 @@ from veritas.platforms.base import PlatformExtractor
 log = logging.getLogger(__name__)
 
 # Default kernel command line from kata config.
+# Contains {nr_cpus} placeholder, substituted per CPU count.
 DEFAULT_KERNEL_CMDLINE = (
     "tsc=reliable no_timer_check rcupdate.rcu_expedited=1 "
     "i8042.direct=1 i8042.dumbkbd=1 i8042.nopnp=1 i8042.noaux=1 "
     "noreplace-smp reboot=k cryptomgr.notests net.ifnames=0 "
     "pci=lastbus=0 console=hvc0 console=hvc1 debug panic=1 "
-    "nr_cpus=1 selinux=0 scsi_mod.scan=none agent.log=debug "
+    "nr_cpus={nr_cpus} selinux=0 scsi_mod.scan=none agent.log=debug "
     "cgroup_no_v1=all systemd.unified_cgroup_hierarchy=1"
 )
-
-# TDX UEFI event log measures the cmdline with "initrd=initrd" suffix
-# and null terminator, encoded as UTF-16-LE.
-TDX_KERNEL_CMDLINE = DEFAULT_KERNEL_CMDLINE + " initrd=initrd\x00"
 
 
 class BaremetalExtractor(PlatformExtractor):
@@ -44,7 +41,8 @@ class BaremetalExtractor(PlatformExtractor):
 
     OCP_RELEASE_REPO = "quay.io/openshift-release-dev/ocp-release"
 
-    def __init__(self, tee, authfile=None, ocp_versions=None):
+    def __init__(self, tee, authfile=None, ocp_versions=None,
+                 kernel_cmdline=None, max_cpu_count=32):
         if tee not in self.EVIDENCE_TYPES:
             raise ValueError(f"Unknown TEE: {tee}. Must be one of {list(self.EVIDENCE_TYPES)}")
         if not ocp_versions:
@@ -52,6 +50,21 @@ class BaremetalExtractor(PlatformExtractor):
         self.tee = tee
         self.authfile = authfile
         self.ocp_versions = ocp_versions
+        self.kernel_cmdline = kernel_cmdline
+        self.max_cpu_count = max_cpu_count
+
+    def _kernel_cmdlines(self):
+        """Return list of kernel cmdlines to compute measurements for.
+
+        If --kernel-cmdline was provided, returns just that cmdline.
+        Otherwise generates one per CPU count using the default template.
+        """
+        if self.kernel_cmdline:
+            return [self.kernel_cmdline]
+        return [
+            DEFAULT_KERNEL_CMDLINE.format(nr_cpus=n)
+            for n in range(1, self.max_cpu_count + 1)
+        ]
 
     @property
     def platform(self) -> str:
@@ -215,16 +228,24 @@ class BaremetalExtractor(PlatformExtractor):
                 source="kata-containers RPM (PE Authenticode hash, QEMU-patched)",
             ))
 
-        cmdline_hash = hashlib.sha384(
-            TDX_KERNEL_CMDLINE.encode("utf-16-le")
-        ).hexdigest()
+        cmdlines = self._kernel_cmdlines()
+        # TDX UEFI event log measures the cmdline with "initrd=initrd" suffix
+        # and null terminator, encoded as UTF-16-LE.
+        cmdline_hashes = []
+        for cmdline in cmdlines:
+            tdx_cmdline = cmdline + " initrd=initrd\x00"
+            h = hashlib.sha384(tdx_cmdline.encode("utf-16-le")).hexdigest()
+            if h not in cmdline_hashes:
+                cmdline_hashes.append(h)
+        source = "kernel cmdline (--kernel-cmdline)" if self.kernel_cmdline else \
+            f"default kata cmdline, nr_cpus=1..{self.max_cpu_count}"
         values.append(ReferenceValue(
             name="tdvfkernelparams",
-            values=[cmdline_hash],
+            values=cmdline_hashes,
             category="executables",
             description="Kernel command line (UTF-16-LE) digest from UEFI event log",
             algorithm="sha384",
-            source="hardcoded default kata kernel cmdline",
+            source=source,
         ))
 
         if "initrd" in artifact_paths:
@@ -249,7 +270,11 @@ class BaremetalExtractor(PlatformExtractor):
         return values
 
     def _compute_snp_values(self, artifact_paths: dict) -> list[ReferenceValue]:
-        """Compute SNP launch measurement using sev-snp-measure."""
+        """Compute SNP launch measurement using sev-snp-measure.
+
+        Runs sev-snp-measure once per kernel cmdline variant. The vcpus
+        parameter also varies with nr_cpus since kata sets both together.
+        """
         ovmf = artifact_paths.get("ovmf_snp")
         vmlinuz = artifact_paths.get("vmlinuz")
         initrd = artifact_paths.get("initrd")
@@ -264,24 +289,41 @@ class BaremetalExtractor(PlatformExtractor):
         except ImportError:
             raise RuntimeError("sev-snp-measure is not installed (pip install sev-snp-measure)")
 
-        log.info("Computing SNP launch measurement...")
-        ld = snp_calc_launch_digest(
-            vcpus=1,
-            vcpu_sig=CPU_SIGS["EPYC-v4"],
-            ovmf_file=str(ovmf),
-            kernel=str(vmlinuz),
-            initrd=str(initrd),
-            append=DEFAULT_KERNEL_CMDLINE,
-            guest_features=0x1,
-            ovmf_hash_str="",
-        )
         import base64
-        measurement = base64.b64encode(ld).decode()
-        log.info("SNP measurement: %s", measurement)
+        cmdlines = self._kernel_cmdlines()
+        measurements = []
+
+        for cmdline in cmdlines:
+            # Extract nr_cpus from cmdline for vcpus param, default to 1
+            vcpus = 1
+            for part in cmdline.split():
+                if part.startswith("nr_cpus="):
+                    try:
+                        vcpus = int(part.split("=", 1)[1])
+                    except ValueError:
+                        pass
+                    break
+
+            ld = snp_calc_launch_digest(
+                vcpus=vcpus,
+                vcpu_sig=CPU_SIGS["EPYC-v4"],
+                ovmf_file=str(ovmf),
+                kernel=str(vmlinuz),
+                initrd=str(initrd),
+                append=cmdline,
+                guest_features=0x1,
+                ovmf_hash_str="",
+            )
+            m = base64.b64encode(ld).decode()
+            if m not in measurements:
+                measurements.append(m)
+
+        log.info("Computed SNP measurements for %d cmdline variant(s), "
+                 "%d unique", len(cmdlines), len(measurements))
 
         return [ReferenceValue(
             name="snp_launch_measurement",
-            values=[measurement],
+            values=measurements,
             category="executables",
             description="SNP launch measurement (OVMF + kernel + initrd + cmdline)",
             algorithm="sha384",
@@ -289,7 +331,11 @@ class BaremetalExtractor(PlatformExtractor):
         )]
 
     def _compute_rtmrs(self, artifact_paths: dict) -> list[ReferenceValue]:
-        """Compute RTMR1 and RTMR2 using tdx-measure --runtime-only."""
+        """Compute RTMR1 and RTMR2 using tdx-measure --runtime-only.
+
+        Runs tdx-measure once per kernel cmdline variant (one per CPU count,
+        or a single user-provided cmdline). Merges unique values.
+        """
         if not shutil.which("tdx-measure"):
             log.warning("tdx-measure not found, skipping RTMR computation")
             return []
@@ -300,47 +346,61 @@ class BaremetalExtractor(PlatformExtractor):
             log.warning("Missing kernel or initrd, skipping RTMR computation")
             return []
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmpdir = Path(tmpdir)
-            kernel_link = tmpdir / "vmlinuz"
-            initrd_link = tmpdir / "kata-cc.initrd"
-            kernel_link.symlink_to(vmlinuz)
-            initrd_link.symlink_to(initrd)
+        cmdlines = self._kernel_cmdlines()
+        rtmr1_values = []
+        rtmr2_values = []
 
-            metadata = {
-                "direct": {
-                    "kernel": "vmlinuz",
-                    "initrd": "kata-cc.initrd",
-                    "cmdline": DEFAULT_KERNEL_CMDLINE,
+        for cmdline in cmdlines:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmpdir = Path(tmpdir)
+                kernel_link = tmpdir / "vmlinuz"
+                initrd_link = tmpdir / "kata-cc.initrd"
+                kernel_link.symlink_to(vmlinuz)
+                initrd_link.symlink_to(initrd)
+
+                metadata = {
+                    "direct": {
+                        "kernel": "vmlinuz",
+                        "initrd": "kata-cc.initrd",
+                        "cmdline": cmdline,
+                    }
                 }
-            }
-            metadata_path = tmpdir / "metadata.json"
-            metadata_path.write_text(json.dumps(metadata))
+                metadata_path = tmpdir / "metadata.json"
+                metadata_path.write_text(json.dumps(metadata))
 
-            result = subprocess.run(
-                ["tdx-measure", str(metadata_path), "--runtime-only", "--json"],
-                capture_output=True, text=True,
-            )
-            if result.returncode != 0:
-                log.warning("tdx-measure failed: %s", result.stderr.strip())
-                return []
+                result = subprocess.run(
+                    ["tdx-measure", str(metadata_path), "--runtime-only", "--json"],
+                    capture_output=True, text=True,
+                )
+                if result.returncode != 0:
+                    log.warning("tdx-measure failed: %s", result.stderr.strip())
+                    return []
 
-            measurements = json.loads(result.stdout)
+                measurements = json.loads(result.stdout)
+
+            if measurements.get("rtmr1") and measurements["rtmr1"] not in rtmr1_values:
+                rtmr1_values.append(measurements["rtmr1"])
+            if measurements.get("rtmr2") and measurements["rtmr2"] not in rtmr2_values:
+                rtmr2_values.append(measurements["rtmr2"])
+
+        log.info("Computed RTMRs for %d cmdline variant(s), "
+                 "%d unique rtmr_1, %d unique rtmr_2",
+                 len(cmdlines), len(rtmr1_values), len(rtmr2_values))
 
         values = []
-        if measurements.get("rtmr1"):
+        if rtmr1_values:
             values.append(ReferenceValue(
                 name="rtmr_1",
-                values=[measurements["rtmr1"]],
+                values=rtmr1_values,
                 category="executables",
                 description="Runtime measurement register 1 (kernel + boot services)",
                 algorithm="sha384",
                 source="tdx-measure --runtime-only",
             ))
-        if measurements.get("rtmr2"):
+        if rtmr2_values:
             values.append(ReferenceValue(
                 name="rtmr_2",
-                values=[measurements["rtmr2"]],
+                values=rtmr2_values,
                 category="executables",
                 description="Runtime measurement register 2 (kernel cmdline + initrd)",
                 algorithm="sha384",
