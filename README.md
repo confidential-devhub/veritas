@@ -55,6 +55,11 @@ veritas --platform baremetal --tee tdx --ocp-version 4.20.6 --ocp-version 4.20.1
 # Include initdata hash
 veritas --platform baremetal --tee tdx --ocp-version 4.20.15 --authfile pull-secret.json --initdata initdata.toml
 
+# Override VM memory size for tdvfkernel hash (baremetal TDX only, default: 2048 MB).
+# Needed because RHEL's QEMU patches the kernel header with addresses that depend on
+# VM memory size. Temporary until RHEL ships the upstream fix (see Known limitations).
+veritas --platform baremetal --tee tdx --ocp-version 4.20.15 --authfile pull-secret.json --mem-size 4096
+
 # Include hardware xfam value from a live TDX quote. This value comes from
 # the CPU/platform and cannot be pre-computed from software artifacts. Collect
 # it once from a running TD (see "Collecting hardware values" below).
@@ -367,10 +372,16 @@ a plain hash of vmlinuz will suffice.
 writes the initrd address into the kernel header, and that address
 depends on the VM memory layout. Veritas defaults to 2 GB (kata
 default). If the VM gets a different memory allocation, the hash
-won't match. Use `--mem-size` to override (not yet implemented).
+won't match. Use `--mem-size` to override (in MB, e.g. `--mem-size 4096`).
+If kata changes its default memory size or a pod's resource request
+causes a different VM memory allocation, the tdvfkernel hash will
+not match and attestation will fail. The total VM memory size is the
+only factor: it determines where the initrd is placed in memory,
+which gets patched into the kernel header before measurement.
 This goes away when RHEL picks up the upstream QEMU fix that
-stops patching the kernel for TDX guests.
-TODO: track when the RHEL QEMU fix lands.
+stops patching the kernel for TDX guests (fix exists upstream,
+RHEL backport date TBD).
+TODO: find the exact upstream QEMU commit and track RHEL backport.
 
 **nr_cpus varies the kernel cmdline.** Kata sets `nr_cpus=N` on
 the kernel command line based on the pod's CPU request, producing
@@ -392,7 +403,7 @@ TODO: track when kata stops varying nr_cpus in the cmdline.
 - [ ] Remove vendored QEMU patching logic once RHEL ships a fixed QEMU
 - [x] Accept hardware xfam value via `--hw-xfam` flag
 - [ ] Add `--xfam-allow` to compute xfam bitmask from feature names (e.g. `--xfam-allow x87,sse,avx,avx512,amx`), replacing `--hw-xfam` as the recommended path
-- [ ] Add `--mem-size` to override the default 2 GB VM memory assumption for tdvfkernel hash
+- [x] Add `--mem-size` to override the default 2 GB VM memory assumption for tdvfkernel hash
 - [ ] Drop standalone `initrd` from RVPS output (pending: clarify if OVMF measures initrd as a separate UEFI event on Red Hat baremetal)
 - [ ] Investigate downstream policy PCR checks ([openshift/trustee-operator#291](https://github.com/openshift/trustee-operator/pull/291)): adds pcr03, pcr08, pcr09, pcr12 for Azure SNP/TDX
 - [ ] CI: validate RVPS keys against policy using OPA (detect missing keys and unused keys)

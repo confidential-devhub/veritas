@@ -42,7 +42,7 @@ class BaremetalExtractor(PlatformExtractor):
     OCP_RELEASE_REPO = "quay.io/openshift-release-dev/ocp-release"
 
     def __init__(self, tee, authfile=None, ocp_versions=None,
-                 kernel_cmdline=None, max_cpu_count=32):
+                 kernel_cmdline=None, max_cpu_count=32, mem_size=0x80000000):
         if tee not in self.EVIDENCE_TYPES:
             raise ValueError(f"Unknown TEE: {tee}. Must be one of {list(self.EVIDENCE_TYPES)}")
         if not ocp_versions:
@@ -52,6 +52,7 @@ class BaremetalExtractor(PlatformExtractor):
         self.ocp_versions = ocp_versions
         self.kernel_cmdline = kernel_cmdline
         self.max_cpu_count = max_cpu_count
+        self.mem_size = mem_size
 
     def _kernel_cmdlines(self):
         """Return list of kernel cmdlines to compute measurements for.
@@ -206,6 +207,7 @@ class BaremetalExtractor(PlatformExtractor):
             digest = compute_kernel_hash(
                 str(artifact_paths["vmlinuz"]),
                 initrd_size=initrd_size,
+                mem_size=self.mem_size,
             )
             values.append(ReferenceValue(
                 name="tdvfkernel",

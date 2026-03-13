@@ -29,6 +29,9 @@ def main():
     parser.add_argument("--max-cpu-count", type=int, default=32,
                         help="Max nr_cpus to generate cmdline variants for (default: 32, "
                         "ignored when --kernel-cmdline is set)")
+    parser.add_argument("--mem-size", type=int, default=2048,
+                        help="VM memory size in MB for tdvfkernel hash (default: 2048, "
+                        "kata default). Only affects baremetal TDX.")
     parser.add_argument("--initdata", help="Path to initdata.toml for hash computation")
     parser.add_argument("--hw-xfam",
                         help="TDX XFAM value from a live quote (TDX only, e.g. e702060000000000)")
@@ -52,6 +55,7 @@ def main():
         if args.platform == "baremetal":
             kwargs["kernel_cmdline"] = args.kernel_cmdline
             kwargs["max_cpu_count"] = args.max_cpu_count
+            kwargs["mem_size"] = args.mem_size * 1024 * 1024
         extractor = extractor_cls(**kwargs)
         values = extractor.extract()
         if args.initdata:
