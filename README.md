@@ -131,7 +131,6 @@ Maps each value checked by the [upstream default Rego policy](https://github.com
 | 💾 Kernel ¹ | ✅ tdvfkernel | ~~part of measur.~~ | - | - |
 | 💾 Kernel cmdline | ✅ tdvfkernelparams | ~~part of measur.~~ | - | - |
 | 💾 Initrd | ~~initrd~~ | ~~part of measur.~~ | ~~tdx_pcr09~~ | ~~snp_pcr09~~ |
-| 💾 Runtime register 0 ² | ~~rtmr_0~~ | - | - | - |
 | 💾 Runtime register 1 | ✅ rtmr_1 | - | - | - |
 | 💾 Runtime register 2 | ✅ rtmr_2 | - | - | - |
 | 💾 UKI bundle | - | - | ✅ tdx_pcr11 | ✅ snp_pcr11 |
@@ -172,8 +171,6 @@ Veritas does not output them.
 | 🔒 TCB SVN (tcb_svn) | Already implicitly checked by the DCAP verifier as part of tcb_status. |
 
 <small><i>¹ QEMU patches the kernel setup header (memory addresses, initrd location) before OVMF measures it. The hash depends on the VM memory layout, which may vary with different kata configurations. This is a known QEMU bug, already fixed upstream but not yet in RHEL. Once RHEL picks up the fix, a plain PE hash of vmlinuz will match.</i></small>
-
-<small><i>² rtmr_0 accumulates firmware configuration events (TD HOB, CFV, SecureBoot variables, ACPI tables). Computing it offline requires the exact ACPI tables that QEMU generates at VM creation time. tdx-measure can generate these but only for Ubuntu, not RHEL. See [virtee/tdx-measure#19](https://github.com/virtee/tdx-measure/issues/19).</i></small>
 
 ## Output example
 
@@ -366,6 +363,22 @@ Once RHEL ships a newer QEMU that skips patching for TDX guests
 (already fixed upstream), this vendored code can be removed and
 a plain hash of vmlinuz will suffice.
 
+**tdvfkernel hash depends on VM memory size.** The QEMU patching
+writes the initrd address into the kernel header, and that address
+depends on the VM memory layout. Veritas defaults to 2 GB (kata
+default). If the VM gets a different memory allocation, the hash
+won't match. Use `--mem-size` to override (not yet implemented).
+This goes away when RHEL picks up the upstream QEMU fix that
+stops patching the kernel for TDX guests.
+TODO: track when the RHEL QEMU fix lands.
+
+**nr_cpus varies the kernel cmdline.** Kata sets `nr_cpus=N` on
+the kernel command line based on the pod's CPU request, producing
+different measurements per CPU count. Veritas generates one value
+per nr_cpus (1..32) to cover all variants. This is reportedly a
+legacy behavior from CPU hot-plug and should be fixed upstream.
+TODO: track when kata stops varying nr_cpus in the cmdline.
+
 ## TODO
 
 ### High priority
@@ -377,8 +390,10 @@ a plain hash of vmlinuz will suffice.
 ### Other
 
 - [ ] Remove vendored QEMU patching logic once RHEL ships a fixed QEMU
-- [ ] Compute rtmr_0 (requires ACPI tables, blocked by [virtee/tdx-measure#19](https://github.com/virtee/tdx-measure/issues/19))
 - [x] Accept hardware xfam value via `--hw-xfam` flag
+- [ ] Add `--xfam-allow` to compute xfam bitmask from feature names (e.g. `--xfam-allow x87,sse,avx,avx512,amx`), replacing `--hw-xfam` as the recommended path
+- [ ] Add `--mem-size` to override the default 2 GB VM memory assumption for tdvfkernel hash
+- [ ] Drop standalone `initrd` from RVPS output (pending: clarify if OVMF measures initrd as a separate UEFI event on Red Hat baremetal)
 - [ ] Investigate downstream policy PCR checks ([openshift/trustee-operator#291](https://github.com/openshift/trustee-operator/pull/291)): adds pcr03, pcr08, pcr09, pcr12 for Azure SNP/TDX
 - [ ] CI: validate RVPS keys against policy using OPA (detect missing keys and unused keys)
 - [ ] CGPU (Confidential GPU) support
