@@ -93,7 +93,9 @@ def main():
 
     rvps_path = output_dir / RVPS_FILENAME
     versions = args.ocp_versions or args.osc_versions
-    rvps_path.write_text(format_trustee(values, extractor.platform, args.tee, versions=versions))
+    skipped = getattr(extractor, "skipped_versions", None)
+    rvps_path.write_text(format_trustee(values, extractor.platform, args.tee,
+                                        versions=versions, skipped=skipped))
     log.info("Written %s", rvps_path)
 
 

@@ -78,6 +78,7 @@ class BaremetalExtractor(PlatformExtractor):
     def extract(self) -> list[ReferenceValue]:
         """Resolve extensions image per OCP version, extract RPMs, and compute hashes."""
         merged = {}
+        self.skipped_versions = []
         for version in self.ocp_versions:
             log.info("Processing OCP %s", version)
             self._verify_release(version)
@@ -87,6 +88,10 @@ class BaremetalExtractor(PlatformExtractor):
             with tempfile.TemporaryDirectory() as tmpdir:
                 self._extract_extensions(image_ref, tmpdir)
                 values = self._extract_and_compute(tmpdir)
+
+            if not values:
+                self.skipped_versions.append(version)
+                continue
 
             for v in values:
                 if v.name in merged:
@@ -190,6 +195,14 @@ class BaremetalExtractor(PlatformExtractor):
                 artifacts["ovmf_snp"] = ovmf_snp[0]
                 log.info("Found OVMF.amdsev.fd: %s", artifacts["ovmf_snp"])
 
+            if "vmlinuz" not in artifacts or "initrd" not in artifacts:
+                missing = [k for k in ("vmlinuz", "initrd") if k not in artifacts]
+                log.error("Missing %s in kata RPM. Cannot compute "
+                          "measurements. Attestation will NOT work on this "
+                          "version. Make sure baremetal CoCo is supported "
+                          "for this OCP release.", missing)
+                return []
+
             if self.tee == "tdx":
                 return self._compute_tdx_values(artifacts)
             else:
@@ -257,9 +270,10 @@ class BaremetalExtractor(PlatformExtractor):
         vmlinuz = artifact_paths.get("vmlinuz")
         initrd = artifact_paths.get("initrd")
 
-        if not all([ovmf, vmlinuz, initrd]):
-            missing = [k for k in ("ovmf_snp", "vmlinuz", "initrd") if k not in artifact_paths]
-            raise RuntimeError(f"Missing artifacts for SNP measurement: {missing}")
+        if not ovmf:
+            log.error("Missing OVMF.amdsev.fd in edk2 RPM. Cannot compute "
+                      "SNP launch measurement.")
+            return []
 
         try:
             from sevsnpmeasure.guest import snp_calc_launch_digest
