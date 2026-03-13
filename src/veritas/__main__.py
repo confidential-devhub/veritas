@@ -33,8 +33,9 @@ def main():
                         help="VM memory size in MB for tdvfkernel hash (default: 2048, "
                         "kata default). Only affects baremetal TDX.")
     parser.add_argument("--initdata", help="Path to initdata.toml for hash computation")
-    parser.add_argument("--hw-xfam",
-                        help="TDX XFAM value from a live quote (TDX only, e.g. e702060000000000)")
+    parser.add_argument("--hw-xfam-allow", action="append", dest="hw_xfam_allow",
+                        help="XFAM CPU feature enabled for the TD (TDX only, repeatable). "
+                        "e.g. --hw-xfam-allow x87 --hw-xfam-allow sse --hw-xfam-allow avx")
     parser.add_argument("-o", "--output", default=".",
                         help="Output directory (default: current directory)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output")
@@ -60,26 +61,28 @@ def main():
         values = extractor.extract()
         if args.initdata:
             values.append(extractor.compute_initdata(args.initdata))
-        if args.hw_xfam:
+        if args.hw_xfam_allow:
             if args.tee != "tdx":
-                log.warning("--hw-xfam is only relevant for TDX, ignoring")
+                log.warning("--hw-xfam-allow is only relevant for TDX, ignoring")
             else:
                 from veritas.models import ReferenceValue
+                from veritas.xfam import compute_xfam
+                xfam_hex = compute_xfam(args.hw_xfam_allow)
                 algo = "sha256" if args.platform == "azure" else "sha384"
                 values.append(ReferenceValue(
                     name="xfam",
-                    values=[args.hw_xfam],
+                    values=[xfam_hex],
                     category="hardware",
                     description="Extended features mask (XSAVE CPU features enabled for the TD)",
                     algorithm=algo,
-                    source="live TDX quote (--hw-xfam)",
+                    source="--hw-xfam-allow " + " ".join(args.hw_xfam_allow),
                 ))
-        if args.tee == "tdx" and not args.hw_xfam:
+        if args.tee == "tdx" and not args.hw_xfam_allow:
             log.warning(
-                "No --hw-xfam provided. The default upstream attestation policy "
-                "checks xfam and will FAIL without it. Either pass --hw-xfam with "
-                "a value from a live TDX quote, or customize the policy to skip "
-                "the xfam check."
+                "No --hw-xfam-allow provided. The default attestation "
+                "policy checks xfam and will FAIL without it. Pass --hw-xfam-allow "
+                "with the CPU features enabled for the TD, or customize the policy "
+                "to skip the xfam check."
             )
     except RuntimeError as e:
         log.error("%s", e)
