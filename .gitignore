@@ -6,3 +6,5 @@ build/
 .eggs/
 *.egg
 .venv/
+report.xml
+report.html

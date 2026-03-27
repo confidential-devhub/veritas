@@ -16,5 +16,9 @@ veritas = "veritas.__main__:main"
 [project.optional-dependencies]
 snp = ["sev-snp-measure"]
 
+[tool.pytest.ini_options]
+addopts = "--tb=line --junitxml=report.xml"
+junit_family = "xunit1"
+
 [tool.setuptools.packages.find]
 where = ["src"]

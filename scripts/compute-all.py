@@ -91,10 +91,15 @@ def run_veritas(platform, tee, authfile, output_dir, ocp_versions=None, osc_vers
     for v in (osc_versions or []):
         cmd.extend(["--osc-version", v])
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
     log_path = output_dir / "veritas.log"
-    log_path.write_text(result.stdout + result.stderr)
-    return result.returncode == 0
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    assert proc.stdout is not None
+    with open(log_path, "w") as log_file:
+        for line in proc.stdout:
+            sys.stderr.write(line)
+            log_file.write(line)
+    proc.wait()
+    return proc.returncode == 0
 
 
 def main():

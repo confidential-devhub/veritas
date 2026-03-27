@@ -75,6 +75,15 @@ class BaremetalExtractor(PlatformExtractor):
     def evidence_type(self) -> str:
         return self.EVIDENCE_TYPES[self.tee]
 
+    CACHE_DIR = Path.home() / ".cache" / "veritas" / "extensions"
+
+    def _cache_path(self, image_ref: str) -> Path | None:
+        """Return cache path for an image ref, or None if no digest found."""
+        if "@sha256:" not in image_ref:
+            return None
+        digest = image_ref.split("@sha256:", 1)[1]
+        return self.CACHE_DIR / digest
+
     def extract(self) -> list[ReferenceValue]:
         """Resolve extensions image per OCP version, extract RPMs, and compute hashes."""
         merged = {}
@@ -85,9 +94,18 @@ class BaremetalExtractor(PlatformExtractor):
             image_ref = self._get_extensions_image(version)
             log.info("Extensions image: %s", image_ref)
 
-            with tempfile.TemporaryDirectory() as tmpdir:
-                self._extract_extensions(image_ref, tmpdir)
-                values = self._extract_and_compute(tmpdir)
+            cache = self._cache_path(image_ref)
+            if cache and cache.exists():
+                log.info("Using cached extensions: %s", cache)
+                values = self._extract_and_compute(str(cache))
+            else:
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    self._extract_extensions(image_ref, tmpdir)
+                    values = self._extract_and_compute(tmpdir)
+                    if cache:
+                        cache.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copytree(tmpdir, cache)
+                        log.info("Cached extensions: %s", cache)
 
             if not values:
                 self.skipped_versions.append(version)
