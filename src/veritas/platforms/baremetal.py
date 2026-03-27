@@ -42,7 +42,8 @@ class BaremetalExtractor(PlatformExtractor):
     OCP_RELEASE_REPO = "quay.io/openshift-release-dev/ocp-release"
 
     def __init__(self, tee, authfile=None, ocp_versions=None,
-                 kernel_cmdline=None, max_cpu_count=32, mem_size=0x80000000):
+                 kernel_cmdline=None, max_cpu_count=32, mem_size=0x80000000,
+                 kata_rpm=None):
         if tee not in self.EVIDENCE_TYPES:
             raise ValueError(f"Unknown TEE: {tee}. Must be one of {list(self.EVIDENCE_TYPES)}")
         if not ocp_versions:
@@ -53,6 +54,9 @@ class BaremetalExtractor(PlatformExtractor):
         self.kernel_cmdline = kernel_cmdline
         self.max_cpu_count = max_cpu_count
         self.mem_size = mem_size
+        self.kata_rpm = Path(kata_rpm) if kata_rpm else None
+        if self.kata_rpm and not self.kata_rpm.exists():
+            raise ValueError(f"Kata RPM not found: {self.kata_rpm}")
 
     def _kernel_cmdlines(self):
         """Return list of kernel cmdlines to compute measurements for.
@@ -179,11 +183,15 @@ class BaremetalExtractor(PlatformExtractor):
         rpm_dir = Path(extensions_dir)
 
         with tempfile.TemporaryDirectory() as extract_dir:
-            kata_rpms = list(rpm_dir.glob(self.KATA_RPM_GLOB))
-            if not kata_rpms:
-                raise RuntimeError(f"No {self.KATA_RPM_GLOB} found in extensions")
-            log.info("Found kata RPM: %s", kata_rpms[0].name)
-            self._extract_rpm(kata_rpms[0], extract_dir)
+            if self.kata_rpm:
+                log.info("Using custom kata RPM: %s", self.kata_rpm)
+                self._extract_rpm(self.kata_rpm, extract_dir)
+            else:
+                kata_rpms = list(rpm_dir.glob(self.KATA_RPM_GLOB))
+                if not kata_rpms:
+                    raise RuntimeError(f"No {self.KATA_RPM_GLOB} found in extensions")
+                log.info("Found kata RPM: %s", kata_rpms[0].name)
+                self._extract_rpm(kata_rpms[0], extract_dir)
 
             edk2_rpms = list(rpm_dir.glob(self.EDK2_RPM_GLOB))
             if not edk2_rpms:

@@ -32,6 +32,10 @@ def main():
     parser.add_argument("--mem-size", type=int, default=2048,
                         help="VM memory size in MB for tdvfkernel hash (default: 2048, "
                         "kata default). Only affects baremetal TDX.")
+    parser.add_argument("--kata-rpm",
+                        help="Path to a local kata-containers RPM. When set, uses this "
+                        "RPM instead of the one from the OCP release extensions image. "
+                        "An --ocp-version is still required to resolve the edk2 RPM.")
     parser.add_argument("--initdata", help="Path to initdata.toml for hash computation")
     parser.add_argument("--hw-xfam-allow", action="append", dest="hw_xfam_allow",
                         help="XFAM CPU feature enabled for the TD (TDX only, repeatable). "
@@ -57,6 +61,7 @@ def main():
             kwargs["kernel_cmdline"] = args.kernel_cmdline
             kwargs["max_cpu_count"] = args.max_cpu_count
             kwargs["mem_size"] = args.mem_size * 1024 * 1024
+            kwargs["kata_rpm"] = args.kata_rpm
         extractor = extractor_cls(**kwargs)
         values = extractor.extract()
         if args.initdata:
