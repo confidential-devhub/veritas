@@ -307,7 +307,6 @@ class BaremetalExtractor(PlatformExtractor):
         except ImportError:
             raise RuntimeError("sev-snp-measure is not installed (pip install sev-snp-measure)")
 
-        import base64
         cmdlines = self._kernel_cmdlines()
         measurements = []
 
@@ -332,7 +331,7 @@ class BaremetalExtractor(PlatformExtractor):
                 guest_features=0x1,
                 ovmf_hash_str="",
             )
-            m = base64.b64encode(ld).decode()
+            m = ld.hex()
             if m not in measurements:
                 measurements.append(m)
 
