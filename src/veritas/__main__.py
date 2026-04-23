@@ -46,6 +46,8 @@ def main():
     parser.add_argument("--hw-xfam-allow", action="append", dest="hw_xfam_allow",
                         help="XFAM CPU feature enabled for the TD (TDX only, repeatable). "
                         "e.g. --hw-xfam-allow x87 --hw-xfam-allow sse --hw-xfam-allow avx")
+    parser.add_argument("--data-key", default="reference-values.json",
+                        help="ConfigMap data key name (default: reference-values.json)")
     parser.add_argument("-o", "--output", default=".",
                         help="Output directory (default: current directory)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output")
@@ -107,7 +109,8 @@ def main():
     versions = args.ocp_versions or args.osc_versions
     skipped = getattr(extractor, "skipped_versions", None)
     rvps_path.write_text(format_trustee(values, extractor.platform, args.tee,
-                                        versions=versions, skipped=skipped))
+                                        versions=versions, skipped=skipped,
+                                        data_key=args.data_key))
     log.info("Written %s", rvps_path)
 
 
