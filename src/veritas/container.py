@@ -2,6 +2,7 @@
 
 import json
 import subprocess
+import tarfile
 import tempfile
 from pathlib import Path
 
@@ -17,6 +18,7 @@ class ContainerImage:
         self.repository = repository
         self.tag = tag
         self.authfile = authfile
+        self._pulled = {}  # image_ref -> (TemporaryDirectory, img_dir Path)
 
     @property
     def reference(self):
@@ -50,10 +52,15 @@ class ContainerImage:
             ], env={"SIGSTORE_REKOR_PUBLIC_KEY": str(rekor_key)})
 
     def pull(self, image_ref):
-        """Pull the image locally."""
-        cmd = ["podman", "pull", image_ref]
+        """Pull the image locally using skopeo copy."""
+        if image_ref in self._pulled:
+            return
+        tmpdir = tempfile.TemporaryDirectory()
+        img_dir = Path(tmpdir.name) / "image"
+        cmd = ["skopeo", "copy", f"docker://{image_ref}", f"dir:{img_dir}"]
         cmd.extend(self._auth_args())
         self._run(cmd)
+        self._pulled[image_ref] = (tmpdir, img_dir)
 
     def extract_file(self, image_ref, container_path):
         """Extract a file from the image and return its contents as text."""
@@ -64,22 +71,61 @@ class ContainerImage:
     def extract_to_dir(self, image_ref, container_path, dest_dir):
         """Extract a file from the image to a destination directory."""
         dest = Path(dest_dir) / Path(container_path).name
-        cid = self._run(["podman", "create", "--entrypoint", "/bin/true", image_ref])
-        try:
-            self._run(["podman", "cp", f"{cid}:{container_path}", str(dest)])
-        finally:
-            self._run(["podman", "rm", cid])
+        self._extract_to_path(image_ref, container_path, dest)
         return dest
 
     def _extract_to_tmp(self, image_ref, container_path):
         """Extract a file from the image to a temp file and return its path."""
-        cid = self._run(["podman", "create", "--entrypoint", "/bin/true", image_ref])
-        try:
-            tmp = tempfile.NamedTemporaryFile(suffix=Path(container_path).suffix, delete=False)
-            self._run(["podman", "cp", f"{cid}:{container_path}", tmp.name])
-            return tmp.name
-        finally:
-            self._run(["podman", "rm", cid])
+        tmp = tempfile.NamedTemporaryFile(suffix=Path(container_path).suffix, delete=False)
+        tmp.close()
+        self._extract_to_path(image_ref, container_path, Path(tmp.name))
+        return tmp.name
+
+    def _get_image_dir(self, image_ref):
+        """Return the local image directory, pulling first if needed."""
+        if image_ref not in self._pulled:
+            self.pull(image_ref)
+        return self._pulled[image_ref][1]
+
+    def _extract_to_path(self, image_ref, container_path, dest_path):
+        """Extract a single file from the image to dest_path."""
+        img_dir = self._get_image_dir(image_ref)
+        self._extract_from_image_dir(img_dir, container_path, dest_path)
+
+    def _extract_from_image_dir(self, img_dir, container_path, dest_path):
+        """Extract a file from a skopeo dir: image directory to dest_path."""
+        img_dir = Path(img_dir)
+        with open(img_dir / "manifest.json") as f:
+            manifest = json.load(f)
+
+        # Tar entries use relative paths without a leading slash
+        tar_path = container_path.lstrip("/")
+        last_found = None  # (layer_file, entry_name_in_tar)
+
+        for layer in manifest["layers"]:
+            # skopeo dir: names layer files by the hex digest only (no "sha256:" prefix)
+            layer_file = img_dir / layer["digest"].split(":", 1)[-1]
+            with tarfile.open(str(layer_file), "r:*") as tf:
+                # Build a lookup normalised to no leading "./"
+                names = {n.lstrip("./"): n for n in tf.getnames()}
+
+                # A whiteout entry signals the file was deleted in this layer
+                parent = str(Path(tar_path).parent).lstrip("./")
+                whiteout = f"{parent}/.wh.{Path(tar_path).name}" if parent not in ("", ".") else f".wh.{Path(tar_path).name}"
+                if whiteout.lstrip("./") in names:
+                    last_found = None
+                    continue
+
+                if tar_path in names:
+                    last_found = (layer_file, names[tar_path])
+
+        if last_found is None:
+            raise FileNotFoundError(f"{container_path} not found in image")
+
+        layer_file, entry_name = last_found
+        with tarfile.open(str(layer_file), "r:*") as tf:
+            with tf.extractfile(tf.getmember(entry_name)) as src:
+                Path(dest_path).write_bytes(src.read())
 
     def _auth_args(self):
         if self.authfile:
