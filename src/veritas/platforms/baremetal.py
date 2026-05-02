@@ -50,7 +50,7 @@ class BaremetalExtractor(PlatformExtractor):
     EDK2_RPM_GLOB = "edk2-ovmf-*.rpm"
     EXTENSIONS_PATH = "/usr/share/rpm-ostree/extensions"
     INITRD_GLOB = "osbuilder-images/*/kata-cc.initrd"
-    GPU_INITRD_GLOB = "osbuilder-images/*/kata-*gpu*.initrd"
+    GPU_INITRD_GLOB = "osbuilder-images/*/kata-cc-*gpu*.initrd"
 
     OCP_RELEASE_REPO = "quay.io/openshift-release-dev/ocp-release"
 
