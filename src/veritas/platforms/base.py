@@ -16,6 +16,10 @@ class PlatformExtractor(ABC):
     def compute_initdata(self, initdata_paths: list[str]) -> ReferenceValue:
         """Compute initdata reference value for this platform."""
 
+    @abstractmethod
+    def reference_key_names(self) -> set[str]:
+        """Return all RVPS key names this extractor can produce."""
+
     @property
     @abstractmethod
     def platform(self) -> str:

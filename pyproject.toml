@@ -15,6 +15,7 @@ veritas = "veritas.__main__:main"
 
 [project.optional-dependencies]
 snp = ["sev-snp-measure"]
+test = ["pytest"]
 
 [tool.pytest.ini_options]
 addopts = "--tb=line --junitxml=report.xml"

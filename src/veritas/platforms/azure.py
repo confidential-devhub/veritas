@@ -114,6 +114,13 @@ class AzureExtractor(PlatformExtractor):
             source=f"computed from {sources}",
         )
 
+    def reference_key_names(self) -> set[str]:
+        keys = {self._rvps_key(pcr) for pcr in self.PCR_DESCRIPTIONS}
+        keys.add(self._rvps_key("pcr08"))
+        if self.tee == "tdx":
+            keys.add("xfam")
+        return keys
+
     def _rvps_key(self, pcr_name: str) -> str:
         """Convert pcr name to RVPS key: pcr03 -> snp_pcr03 or tdx_pcr03."""
         return f"{self.tee}_{pcr_name}"

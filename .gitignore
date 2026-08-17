@@ -8,3 +8,4 @@ build/
 .venv/
 report.xml
 report.html
+tests/.cache/

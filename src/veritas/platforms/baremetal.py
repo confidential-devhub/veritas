@@ -101,6 +101,12 @@ class BaremetalExtractor(PlatformExtractor):
     def evidence_type(self) -> str:
         return self.EVIDENCE_TYPES[self.tee]
 
+    def reference_key_names(self) -> set[str]:
+        if self.tee == "tdx":
+            return {"tdvfkernel", "tdvfkernelparams", "mr_td", "rtmr_1",
+                    "rtmr_2", "init_data", "xfam"}
+        return {"snp_launch_measurement", "init_data"}
+
     CACHE_DIR = Path.home() / ".cache" / "veritas" / "extensions"
 
     def _cache_path(self, image_ref: str) -> Path | None:
