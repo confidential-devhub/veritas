@@ -57,6 +57,16 @@ def main():
                               "as produced by oc-mirror. Used for the dm-verity image (azure) "
                               "and the OCP release payload and extensions image (baremetal). "
                               "Example: my-acr.azurecr.io")
+    disconnected.add_argument("--signature-store", action="append", dest="signature_stores",
+                              help="OCP release signature store base URL (baremetal, repeatable). "
+                              "Overrides the default public Red Hat stores; use an internal mirror "
+                              "or a file:// path in disconnected environments. The image digest is "
+                              "appended as <store>/sha256=<digest>/signature-<n>.")
+    disconnected.add_argument("--release-pub-key",
+                              help="Path to the Red Hat release-signing public key (baremetal). "
+                              "Overrides the key vendored in veritas; its fingerprint must still "
+                              "match the pinned Red Hat release key. Use in disconnected "
+                              "environments that cannot reach the default key source.")
     disconnected.add_argument("--cosign-pub-key",
                               help="Path to a local cosign public key PEM file. When set, skips the "
                               "download of the Red Hat cosign key from security.access.redhat.com. "
@@ -100,6 +110,10 @@ def main():
             kwargs["mem_size"] = args.mem_size * 1024 * 1024
             kwargs["kata_rpm"] = args.kata_rpm
             kwargs["gpu"] = args.gpu
+            if args.signature_stores:
+                kwargs["signature_stores"] = args.signature_stores
+            if args.release_pub_key:
+                kwargs["release_pub_key"] = args.release_pub_key
         else:  # azure
             if args.image_tags:
                 kwargs["image_tags"] = args.image_tags
