@@ -186,6 +186,9 @@ See [DISCONNECTED.md](DISCONNECTED.md) for guidance on running veritas
 in air-gapped environments, including registry mirrors and signature
 verification options.
 
+See [COLLATERAL.md](COLLATERAL.md) to provide attestation collateral
+(CPU vendor certificates) to Trustee in disconnected clusters.
+
 ## Known limitations
 
 See [Baremetal](BAREMETAL.md) and [Azure](AZURE.md) for

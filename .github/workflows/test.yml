@@ -16,7 +16,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install
-        run: pip install -e ".[test]"
+        run: pip install -e ".[test,snp]"
 
       - name: Test
         run: pytest

@@ -14,7 +14,7 @@ license = "Apache-2.0"
 veritas = "veritas.__main__:main"
 
 [project.optional-dependencies]
-snp = ["sev-snp-measure"]
+snp = ["sev-snp-measure", "cryptography"]
 test = ["pytest"]
 
 [tool.pytest.ini_options]

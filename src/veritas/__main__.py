@@ -14,6 +14,10 @@ RVPS_FILENAME = "rvps-reference-values.yaml"
 
 
 def main():
+    if sys.argv[1:2] == ["collateral"]:
+        from veritas.collaterals import main as collateral_main
+        return collateral_main(sys.argv[2:])
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--platform", required=True, choices=EXTRACTORS.keys())
     parser.add_argument("--tee", default="tdx", choices=["tdx", "snp"])
