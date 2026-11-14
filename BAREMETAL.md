@@ -7,6 +7,58 @@ binaries inside them.
 
 Supports TDX and SNP.
 
+## Release authentication
+
+Veritas turns the contents of an OCP release into *trusted* reference
+values, and it runs before deployment on a host that may be
+compromised. So it authenticates the release publisher cryptographically
+before using anything from the payload, and pins every subsequent lookup
+to the authenticated digest:
+
+1. The release image's Red Hat "simple signing" (atomic container
+   signature) is verified with `skopeo standalone-verify` against the
+   **Red Hat release key** (fingerprint
+   `567E347AD0044ADE55BA8A5F199E2F91FD431D51`, "Red Hat, Inc. (release
+   key 2)"). The public key ships inside veritas
+   (`veritas/data/redhat-release-verifier.gpg`) so trust is never
+   bootstrapped from a key fetched at run time; its fingerprint is
+   checked against the pinned value before use. Signatures are fetched
+   from the same public stores the Cluster Version Operator uses
+   (`mirror.openshift.com`, `storage.googleapis.com`).
+2. The signature binds a **digest**; veritas resolves the tag to that
+   digest and uses the digest-pinned reference for the
+   `oc adm release info --verify` integrity check and for the
+   `rhel-coreos-extensions` lookup — never re-resolving the mutable tag.
+3. The `kata-containers` and `edk2-ovmf` RPMs are themselves GPG-signed
+   by the same Red Hat key; veritas verifies each RPM's signature before
+   extracting it, on both fresh pulls and cache hits, so a tampered or
+   unsigned RPM in the local extensions cache cannot forge measurements.
+
+The trust chain is:
+
+```
+Red Hat release key (vendored, fingerprint-pinned)
+  -> GPG-signed release claim
+  -> release image digest
+  -> rhel-coreos-extensions image (resolved from the digest)
+  -> kata-containers / edk2-ovmf RPMs (GPG-signed by the same key)
+  -> configuration.toml (inside the signed RPM)
+  -> veritas reference values
+```
+
+Verification **fails closed**: if the publisher signature is missing,
+invalid, references the wrong digest/identity, cannot be fetched, or an
+RPM signature does not verify, veritas errors out rather than emitting
+values. There is no flag to disable it.
+
+> [!NOTE]
+> Disconnected environments: mirror the signature store and point
+> veritas at it with `--signature-store` (repeatable; accepts an
+> `http(s)://` mirror or a `file://` path). If the key cannot be reached
+> from the default location, pass `--release-pub-key` with the Red Hat
+> release key — its fingerprint must still match the pinned value. The
+> image side continues to use `--mirror-registry`.
+
 ## Usage
 
 ```

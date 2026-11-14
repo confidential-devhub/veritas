@@ -24,4 +24,9 @@ junit_family = "xunit1"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+# Trusted Red Hat release-signing public key, used to authenticate OCP release
+# image and RPM signatures. Must ship inside the wheel/container.
+veritas = ["data/*.gpg"]
+
 [tool.setuptools_scm]

@@ -13,6 +13,7 @@ from veritas.vendor.td_shim_tee_info_hash import compute_mrtd
 from veritas.models import ReferenceValue
 from veritas.platforms.base import PlatformExtractor
 from veritas.platforms.utils import remap_registry
+from veritas.release_auth import ReleaseAuthenticator, ReleaseAuthError
 
 log = logging.getLogger(__name__)
 
@@ -57,7 +58,8 @@ class BaremetalExtractor(PlatformExtractor):
 
     def __init__(self, tee, authfile=None, ocp_versions=None,
                  kernel_cmdline=None, max_cpu_count=32, mem_size=0x80000000,
-                 kata_rpm=None, gpu=False, mirror_registry=None):
+                 kata_rpm=None, gpu=False, mirror_registry=None,
+                 signature_stores=None, release_pub_key=None):
         if tee not in self.EVIDENCE_TYPES:
             raise ValueError(f"Unknown TEE: {tee}. Must be one of {list(self.EVIDENCE_TYPES)}")
         if not ocp_versions:
@@ -72,6 +74,14 @@ class BaremetalExtractor(PlatformExtractor):
         self.gpu = gpu
         self.ocp_release_repo = remap_registry(self.OCP_RELEASE_REPO, mirror_registry)
         self.mirror_registry = mirror_registry
+        # Authenticates the OCP release publisher signature and the RPM
+        # signatures against Red Hat's trusted key. Constructed here (no I/O);
+        # replaceable in tests.
+        self.authenticator = ReleaseAuthenticator(
+            authfile=authfile,
+            signature_stores=signature_stores,
+            public_key_file=release_pub_key,
+        )
         if self.kata_rpm and not self.kata_rpm.exists():
             raise ValueError(f"Kata RPM not found: {self.kata_rpm}")
 
@@ -122,8 +132,12 @@ class BaremetalExtractor(PlatformExtractor):
         self.skipped_versions = []
         for version in self.ocp_versions:
             log.info("Processing OCP %s", version)
-            self._verify_release(version)
-            image_ref = self._get_extensions_image(version)
+            # Authenticate the release publisher first, then pin everything
+            # downstream to the verified digest (never re-resolve the mutable
+            # tag). oc's integrity check runs as an additional step.
+            release_ref = self._authenticate_release(version)
+            self._verify_release(release_ref)
+            image_ref = self._get_extensions_image(release_ref)
             log.info("Extensions image: %s", image_ref)
 
             cache = self._cache_path(image_ref)
@@ -179,31 +193,56 @@ class BaremetalExtractor(PlatformExtractor):
             source=f"computed from {sources}",
         )
 
-    def _verify_release(self, ocp_version: str):
-        """Verify the OCP release payload integrity."""
-        release_image = f"{self.ocp_release_repo}:{ocp_version}-x86_64"
-        cmd = ["oc", "adm", "release", "info", "--verify", release_image]
+    def _authenticate_release(self, ocp_version: str) -> str:
+        """Cryptographically authenticate the release publisher.
+
+        Verifies the release image's Red Hat "simple signing" signature and
+        returns a digest-pinned release reference. Everything downstream is
+        resolved from this authenticated digest, not the mutable tag, so a
+        tag that is later re-pointed cannot substitute a different payload.
+        Fails closed (RuntimeError) if the publisher cannot be authenticated.
+        """
+        tag = f"{ocp_version}-x86_64"
+        try:
+            digest = self.authenticator.verify_release(self.ocp_release_repo, tag)
+        except ReleaseAuthError as e:
+            raise RuntimeError(
+                f"OCP {ocp_version} release publisher authentication failed: {e}"
+            ) from e
+        return f"{self.ocp_release_repo}@{digest}"
+
+    def _verify_release(self, release_ref: str):
+        """Verify the OCP release payload integrity (additional check).
+
+        Runs on the authenticated, digest-pinned reference, after publisher
+        authentication, as an extra content-integrity validation.
+        """
+        cmd = ["oc", "adm", "release", "info", "--verify", release_ref]
         if self.authfile:
             cmd.extend(["-a", self.authfile])
-        log.info("Verifying OCP %s release payload...", ocp_version)
+        log.info("Verifying release payload integrity: %s", release_ref)
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
-            raise RuntimeError(f"Release verification failed for OCP {ocp_version}:\n{result.stderr}")
-        log.info("Release verified: %s", result.stdout.strip())
+            raise RuntimeError(f"Release verification failed for {release_ref}:\n{result.stderr}")
+        log.info("Release payload integrity verified")
 
-    def _get_extensions_image(self, ocp_version: str) -> str:
-        """Get rhel-coreos-extensions image ref from the OCP release."""
-        release_image = f"{self.ocp_release_repo}:{ocp_version}-x86_64"
+    def _get_extensions_image(self, release_ref: str) -> str:
+        """Get rhel-coreos-extensions image ref from the authenticated release.
+
+        ``release_ref`` is the digest-pinned reference returned by
+        :meth:`_authenticate_release`; ``--image-for`` yields a digest-pinned
+        extensions reference, keeping the chain digest-bound.
+        """
         cmd = [
             "oc", "adm", "release", "info",
             "--image-for=rhel-coreos-extensions",
-            release_image,
+            release_ref,
         ]
         if self.authfile:
             cmd.extend(["-a", self.authfile])
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
-            raise RuntimeError(f"Failed to get extensions image for OCP {ocp_version}:\n{result.stderr}")
+            raise RuntimeError(f"Failed to get extensions image for {release_ref}:\n{result.stderr}")
         return remap_registry(result.stdout.strip(), self.mirror_registry)
 
     def _extract_extensions(self, image_ref, dest_dir):
@@ -227,18 +266,27 @@ class BaremetalExtractor(PlatformExtractor):
         with tempfile.TemporaryDirectory() as extract_dir:
             if self.kata_rpm:
                 log.info("Using custom kata RPM: %s", self.kata_rpm)
-                self._extract_rpm(self.kata_rpm, extract_dir)
+                kata_rpm = self.kata_rpm
             else:
                 kata_rpms = list(rpm_dir.glob(self.KATA_RPM_GLOB))
                 if not kata_rpms:
                     raise RuntimeError(f"No {self.KATA_RPM_GLOB} found in extensions")
                 log.info("Found kata RPM: %s", kata_rpms[0].name)
-                self._extract_rpm(kata_rpms[0], extract_dir)
+                kata_rpm = kata_rpms[0]
 
             edk2_rpms = list(rpm_dir.glob(self.EDK2_RPM_GLOB))
             if not edk2_rpms:
                 raise RuntimeError(f"No {self.EDK2_RPM_GLOB} found in extensions")
             log.info("Found edk2 RPM: %s", edk2_rpms[0].name)
+
+            # Verify the RPM signatures against the trusted Red Hat key before
+            # trusting anything inside them. This runs whether the RPMs came
+            # from a fresh digest-pinned pull or the local extensions cache, so
+            # a tampered or unsigned cached RPM cannot forge measurements.
+            self._verify_rpm_signature(kata_rpm)
+            self._verify_rpm_signature(edk2_rpms[0])
+
+            self._extract_rpm(kata_rpm, extract_dir)
             self._extract_rpm(edk2_rpms[0], extract_dir)
 
             extract_path = Path(extract_dir)
@@ -565,6 +613,13 @@ class BaremetalExtractor(PlatformExtractor):
             algorithm="sha384",
             source="TDVF descriptor from OVMF.inteltdx.fd",
         )
+
+    def _verify_rpm_signature(self, rpm_path):
+        """Verify an RPM is signed by the trusted Red Hat key. Fail closed."""
+        try:
+            self.authenticator.verify_rpm(rpm_path)
+        except ReleaseAuthError as e:
+            raise RuntimeError(str(e)) from e
 
     @staticmethod
     def _extract_rpm(rpm_path, dest_dir):
