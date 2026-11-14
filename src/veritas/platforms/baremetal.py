@@ -12,31 +12,14 @@ from veritas.vendor.td_payload_qemu_hash import compute_kernel_hash
 from veritas.vendor.td_shim_tee_info_hash import compute_mrtd
 from veritas.models import ReferenceValue
 from veritas.platforms.base import PlatformExtractor
+from veritas.vendor.kata_config import (
+    KataConfigError,
+    KataGuestConfig,
+    cmdline_variants,
+)
 from veritas.platforms.utils import remap_registry
 
 log = logging.getLogger(__name__)
-
-# Default kernel command line from kata config.
-# Contains {nr_cpus} placeholder, substituted per CPU count.
-DEFAULT_KERNEL_CMDLINE = (
-    "tsc=reliable no_timer_check rcupdate.rcu_expedited=1 "
-    "i8042.direct=1 i8042.dumbkbd=1 i8042.nopnp=1 i8042.noaux=1 "
-    "noreplace-smp reboot=k cryptomgr.notests net.ifnames=0 "
-    "pci=lastbus=0 console=hvc0 console=hvc1 debug panic=1 "
-    "nr_cpus={nr_cpus} selinux=0 scsi_mod.scan=none agent.log=debug "
-    "cgroup_no_v1=all systemd.unified_cgroup_hierarchy=1"
-)
-
-# GPU pod kernel command line.
-# Uses devtmpfs.mount=0 instead of systemd.unified_cgroup_hierarchy=1
-GPU_KERNEL_CMDLINE = (
-    "tsc=reliable no_timer_check rcupdate.rcu_expedited=1 "
-    "i8042.direct=1 i8042.dumbkbd=1 i8042.nopnp=1 i8042.noaux=1 "
-    "noreplace-smp reboot=k cryptomgr.notests net.ifnames=0 "
-    "pci=lastbus=0 console=hvc0 console=hvc1 debug panic=1 "
-    "nr_cpus={nr_cpus} selinux=0 scsi_mod.scan=none agent.log=debug "
-    "cgroup_no_v1=all devtmpfs.mount=0"
-)
 
 
 class BaremetalExtractor(PlatformExtractor):
@@ -45,6 +28,16 @@ class BaremetalExtractor(PlatformExtractor):
     EVIDENCE_TYPES = {
         "tdx": "tdx",
         "snp": "snp",
+    }
+
+    # RPM subdirectory that carries the configuration.toml for each runtime
+    # class a measurement is generated for. The runtime class the cluster
+    # actually uses maps onto these (on OpenShift, RuntimeClass kata-cc
+    # handler=kata-tdx on a TDX machine, kata-cc-nvidia-gpu
+    # handler=kata-tdx-nvidia-gpu).
+    RUNTIME_CLASS_DIRS = {
+        "tdx": {"default": "kata-tdx", "gpu": "kata-tdx-nvidia-gpu"},
+        "snp": {"default": "kata-snp", "gpu": "kata-snp-nvidia-gpu"},
     }
 
     KATA_RPM_GLOB = "kata-containers-*.rpm"
@@ -72,6 +65,9 @@ class BaremetalExtractor(PlatformExtractor):
         self.gpu = gpu
         self.ocp_release_repo = remap_registry(self.OCP_RELEASE_REPO, mirror_registry)
         self.mirror_registry = mirror_registry
+        # Guest cmdline configuration per runtime class, parsed from the
+        # configuration.toml inside the kata RPM ("default" / "gpu" keys).
+        self._guest_configs: dict[str, KataGuestConfig] = {}
         if self.kata_rpm and not self.kata_rpm.exists():
             raise ValueError(f"Kata RPM not found: {self.kata_rpm}")
 
@@ -79,19 +75,55 @@ class BaremetalExtractor(PlatformExtractor):
         """Return list of kernel cmdlines to compute measurements for.
 
         If --kernel-cmdline was provided, returns just that cmdline.
-        Otherwise generates one per CPU count using the appropriate template.
+        Otherwise reconstructs the command line kata-runtime assembles from
+        the configuration.toml shipped in the kata RPM (see
+        veritas.vendor.kata_config), one variant per CPU count.
 
         Args:
-            is_gpu: If True, uses GPU cmdline template. Ignored if --kernel-cmdline is set.
+            is_gpu: If True, uses the GPU runtime class config. Ignored if
+                --kernel-cmdline is set.
         """
         if self.kernel_cmdline:
             return [self.kernel_cmdline]
 
-        template = GPU_KERNEL_CMDLINE if is_gpu else DEFAULT_KERNEL_CMDLINE
-        return [
-            template.format(nr_cpus=n)
-            for n in range(1, self.max_cpu_count + 1)
-        ]
+        return cmdline_variants(self._guest_config(is_gpu), self.max_cpu_count)
+
+    def _guest_config(self, is_gpu: bool) -> KataGuestConfig:
+        """Guest cmdline config for the runtime class, or a clear error.
+
+        The default runtime class is required, so a missing config raises
+        KataConfigError (the caller skips the whole OCP version). The optional
+        GPU class is pre-checked by the caller instead, so it never reaches the
+        error path here.
+        """
+        key = "gpu" if is_gpu else "default"
+        cfg = self._guest_configs.get(key)
+        if cfg is None:
+            class_dir = self.RUNTIME_CLASS_DIRS[self.tee][key]
+            raise KataConfigError(
+                "cannot reconstruct the guest kernel command line: no "
+                f"configuration.toml for runtime class directory '{class_dir}' "
+                "was found in the kata RPM. Pass --kernel-cmdline to specify "
+                "the command line manually."
+            )
+        return cfg
+
+    def _parse_guest_configs(self, extract_path: Path):
+        """Parse the per-runtime-class configuration.toml from the kata RPM.
+
+        The configs live next to the kernel/initrd artifacts veritas already
+        extracts (etc/kata-containers/<class>/configuration.toml), so the
+        generated measurements are derived from the same approved
+        configuration the runtime uses.
+        """
+        self._guest_configs = {}
+        class_dirs = self.RUNTIME_CLASS_DIRS[self.tee]
+        for key, class_dir in class_dirs.items():
+            matches = list(extract_path.glob(f"etc/kata-containers/{class_dir}/configuration.toml"))
+            if not matches:
+                continue
+            self._guest_configs[key] = KataGuestConfig.from_toml(matches[0])
+            log.info("Parsed guest cmdline config (%s): %s", key, matches[0])
 
     @property
     def platform(self) -> str:
@@ -126,18 +158,27 @@ class BaremetalExtractor(PlatformExtractor):
             image_ref = self._get_extensions_image(version)
             log.info("Extensions image: %s", image_ref)
 
-            cache = self._cache_path(image_ref)
-            if cache and cache.exists():
-                log.info("Using cached extensions: %s", cache)
-                values = self._extract_and_compute(str(cache))
-            else:
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    self._extract_extensions(image_ref, tmpdir)
-                    values = self._extract_and_compute(tmpdir)
-                    if cache:
-                        cache.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copytree(tmpdir, cache)
-                        log.info("Cached extensions: %s", cache)
+            try:
+                cache = self._cache_path(image_ref)
+                if cache and cache.exists():
+                    log.info("Using cached extensions: %s", cache)
+                    values = self._extract_and_compute(str(cache))
+                else:
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        self._extract_extensions(image_ref, tmpdir)
+                        values = self._extract_and_compute(tmpdir)
+                        if cache:
+                            cache.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copytree(tmpdir, cache)
+                            log.info("Cached extensions: %s", cache)
+            except KataConfigError as e:
+                # This version's kata RPM carries no usable configuration.toml
+                # for the required runtime class; skip it rather than abort the
+                # whole run and discard values already computed for other
+                # versions. Pass --kernel-cmdline to handle it manually.
+                log.warning("Skipping OCP %s: %s", version, e)
+                self.skipped_versions.append(version)
+                continue
 
             if not values:
                 self.skipped_versions.append(version)
@@ -243,6 +284,10 @@ class BaremetalExtractor(PlatformExtractor):
 
             extract_path = Path(extract_dir)
 
+            # Guest cmdlines are derived from the RPM's own configuration
+            # (needed before any measurement is computed).
+            self._parse_guest_configs(extract_path)
+
             vmlinuz_candidates = list(extract_path.rglob("osbuilder-images/*/vmlinuz"))
             if vmlinuz_candidates:
                 artifacts["vmlinuz"] = vmlinuz_candidates[0]
@@ -305,7 +350,21 @@ class BaremetalExtractor(PlatformExtractor):
                     log.info("Generating measurements for regular (non-GPU) pods")
                     all_values.extend(self._compute_values_for_variant(artifacts, "initrd", is_gpu=False))
 
-                for gpu_initrd in artifacts["gpu_initrds"]:
+                # The GPU runtime class is optional: a missing GPU config only
+                # means this cluster cannot run GPU pods, so skip that subset
+                # and keep the regular-pod values. (A missing *default* config,
+                # by contrast, leaves nothing to measure and raises
+                # KataConfigError, skipping the whole version.) Either way we
+                # never guess a cmdline.
+                gpu_initrds = artifacts["gpu_initrds"]
+                if gpu_initrds and "gpu" not in self._guest_configs:
+                    gpu_dir = self.RUNTIME_CLASS_DIRS[self.tee]["gpu"]
+                    log.warning(
+                        "Skipping GPU pod measurements: no configuration.toml "
+                        "for GPU runtime class directory '%s' in the kata RPM "
+                        "(found %d GPU initrd(s))", gpu_dir, len(gpu_initrds))
+                    gpu_initrds = []
+                for gpu_initrd in gpu_initrds:
                     log.info("Generating measurements for GPU pods: %s", gpu_initrd.name)
                     variant = artifacts.copy()
                     variant["initrd"] = gpu_initrd
@@ -371,7 +430,7 @@ class BaremetalExtractor(PlatformExtractor):
         variant = "GPU " if is_gpu else ""
         source = f"kernel cmdline (--kernel-cmdline --gpu)" if (self.kernel_cmdline and is_gpu) else \
             f"kernel cmdline (--kernel-cmdline)" if self.kernel_cmdline else \
-            f"{variant}default kata cmdline, nr_cpus=1..{self.max_cpu_count}"
+            f"{variant}kata configuration.toml cmdline, nr_cpus=1..{self.max_cpu_count}"
         values.append(ReferenceValue(
             name="tdvfkernelparams",
             values=cmdline_hashes,
@@ -449,7 +508,7 @@ class BaremetalExtractor(PlatformExtractor):
         variant = "GPU " if is_gpu else ""
         source_suffix = f"kernel cmdline (--kernel-cmdline --gpu)" if (self.kernel_cmdline and is_gpu) else \
             f"kernel cmdline (--kernel-cmdline)" if self.kernel_cmdline else \
-            f"{variant}default kata cmdline, nr_cpus=1..{self.max_cpu_count}"
+            f"{variant}kata configuration.toml cmdline, nr_cpus=1..{self.max_cpu_count}"
 
         return [ReferenceValue(
             name="snp_launch_measurement",
@@ -524,7 +583,7 @@ class BaremetalExtractor(PlatformExtractor):
         variant = "GPU " if is_gpu else ""
         source_suffix = f"kernel cmdline (--kernel-cmdline --gpu)" if (self.kernel_cmdline and is_gpu) else \
             f"kernel cmdline (--kernel-cmdline)" if self.kernel_cmdline else \
-            f"{variant}default kata cmdline, nr_cpus=1..{self.max_cpu_count}"
+            f"{variant}kata configuration.toml cmdline, nr_cpus=1..{self.max_cpu_count}"
 
         values = []
         if rtmr1_values:
