@@ -72,6 +72,18 @@ assembles it at VM creation time, and one of the parameters is
 A pod requesting 4 CPUs will produce a different measurement than
 one requesting 1.
 
+Kata assembles this command line at VM creation from the runtime-class
+`configuration.toml` shipped inside the kata-containers RPM, then
+appends `nr_cpus=N`. Veritas reads that config straight from the RPM —
+for both the regular and GPU runtime classes — so reference values come
+from the same configuration the runtime uses; there is nothing to set
+by hand.
+
+> [!WARNING]
+> If the kata RPM has no `configuration.toml` for the required runtime
+> class, veritas errors out rather than guessing (an optional GPU-only
+> class is skipped). Pass `--kernel-cmdline` to supply one explicitly.
+
 By default, veritas generates reference values for every CPU count
 from 1 to 32. This means cmdline-dependent keys (`tdvfkernelparams`,
 `rtmr_1`, `rtmr_2` for TDX; `snp_launch_measurement` for SNP) will
@@ -86,10 +98,10 @@ veritas --platform baremetal --tee tdx --ocp-version 4.20.15 \
   --max-cpu-count 8
 ```
 
-If your deployment uses a custom kernel command line (modified kata
-configuration on the node), use `--kernel-cmdline` to pass the exact
-string. This produces a single measurement value and skips the CPU
-count iteration:
+If your deployment overrides the guest kernel command line outside the
+RPM configuration (e.g. per-pod `kernel_params` annotations), use
+`--kernel-cmdline` to pass the exact string. This produces a single
+measurement value and skips the CPU count iteration:
 
 ```
 veritas --platform baremetal --tee tdx --ocp-version 4.20.15 \
@@ -103,11 +115,9 @@ veritas --platform baremetal --tee tdx --ocp-version 4.20.15 \
 > kata stops varying `nr_cpus`, this section and `--max-cpu-count`
 > become unnecessary.
 
-To find the current kernel command line on a node, check the kata
-configuration at `/opt/kata/share/defaults/kata-containers/configuration-*.toml`
-(the `kernel_params` field). Note that kata appends `nr_cpus=N` at
-runtime based on the pod spec, so the config file alone is not the
-complete cmdline.
+To inspect the command line a node actually builds, check the journal of
+a running confidential pod (the `launching ... -append ...` line, with
+kata debug enabled).
 
 > [!WARNING]
 > The initrd measurement event in rtmr_2 may be dropped upstream.
