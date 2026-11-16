@@ -1,0 +1,13 @@
+{
+  "osc_version": "1.14",
+  "source": "PO confirmation (chat): 'for Bare Metal and all self-managed OCP on public cloud the same four versions that I mentioned in final release timeline announcement will apply'",
+  "retrieved": "2026-11-16",
+  "platforms": {
+    "baremetal": {
+      "min_z": ["4.20.49", "4.21.45", "4.22.25", "5.0.4"]
+    },
+    "azure": {
+      "min_z": ["4.20.49", "4.21.45", "4.22.25", "5.0.4"]
+    }
+  }
+}
