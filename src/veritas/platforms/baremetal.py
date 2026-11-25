@@ -3,6 +3,7 @@
 import hashlib
 import json
 import logging
+import re
 import shutil
 import subprocess
 import tempfile
@@ -43,6 +44,10 @@ class BaremetalExtractor(PlatformExtractor):
     KATA_RPM_GLOB = "kata-containers-*.rpm"
     EDK2_RPM_GLOB = "edk2-ovmf-*.rpm"
     EXTENSIONS_PATH = "/usr/share/rpm-ostree/extensions"
+    # OCP payloads since 4.21 carry two OS generations side by side (RHCOS 9
+    # and RHCOS 10), each with its own extensions image named
+    # rhel-coreos-extensions / rhel-coreos-10-extensions.
+    EXTENSIONS_IMAGE_TAG_RE = re.compile(r"rhel-coreos(-\d+)?-extensions")
     INITRD_GLOB = "osbuilder-images/*/kata-cc.initrd"
     GPU_INITRD_GLOB = "osbuilder-images/*/kata-*gpu*.initrd"
 
@@ -149,42 +154,45 @@ class BaremetalExtractor(PlatformExtractor):
         return self.CACHE_DIR / digest
 
     def extract(self) -> list[ReferenceValue]:
-        """Resolve extensions image per OCP version, extract RPMs, and compute hashes."""
+        """Resolve extensions images per OCP version, extract RPMs, and compute hashes."""
         merged = {}
         self.skipped_versions = []
         for version in self.ocp_versions:
             log.info("Processing OCP %s", version)
             self._verify_release(version)
-            image_ref = self._get_extensions_image(version)
-            log.info("Extensions image: %s", image_ref)
+            version_values = []
+            for image_ref in self._get_extensions_images(version):
+                log.info("Extensions image: %s", image_ref)
 
-            try:
-                cache = self._cache_path(image_ref)
-                if cache and cache.exists():
-                    log.info("Using cached extensions: %s", cache)
-                    values = self._extract_and_compute(str(cache))
-                else:
-                    with tempfile.TemporaryDirectory() as tmpdir:
-                        self._extract_extensions(image_ref, tmpdir)
-                        values = self._extract_and_compute(tmpdir)
-                        if cache:
-                            cache.parent.mkdir(parents=True, exist_ok=True)
-                            shutil.copytree(tmpdir, cache)
-                            log.info("Cached extensions: %s", cache)
-            except KataConfigError as e:
-                # This version's kata RPM carries no usable configuration.toml
-                # for the required runtime class; skip it rather than abort the
-                # whole run and discard values already computed for other
-                # versions. Pass --kernel-cmdline to handle it manually.
-                log.warning("Skipping OCP %s: %s", version, e)
+                try:
+                    cache = self._cache_path(image_ref)
+                    if cache and cache.exists():
+                        log.info("Using cached extensions: %s", cache)
+                        values = self._extract_and_compute(str(cache))
+                    else:
+                        with tempfile.TemporaryDirectory() as tmpdir:
+                            self._extract_extensions(image_ref, tmpdir)
+                            values = self._extract_and_compute(tmpdir)
+                            if cache:
+                                cache.parent.mkdir(parents=True, exist_ok=True)
+                                shutil.copytree(tmpdir, cache)
+                                log.info("Cached extensions: %s", cache)
+                except KataConfigError as e:
+                    # This extensions image's kata RPM carries no usable
+                    # configuration.toml for the required runtime class; skip
+                    # it rather than abort the whole run and discard values
+                    # already computed for the other images and versions.
+                    # Pass --kernel-cmdline to handle it manually.
+                    log.warning("Skipping extensions %s: %s", image_ref, e)
+                    continue
+
+                version_values.extend(values)
+
+            if not version_values:
                 self.skipped_versions.append(version)
                 continue
 
-            if not values:
-                self.skipped_versions.append(version)
-                continue
-
-            for v in values:
+            for v in version_values:
                 if v.name in merged:
                     for val in v.values:
                         if val not in merged[v.name].values:
@@ -232,20 +240,35 @@ class BaremetalExtractor(PlatformExtractor):
             raise RuntimeError(f"Release verification failed for OCP {ocp_version}:\n{result.stderr}")
         log.info("Release verified: %s", result.stdout.strip())
 
-    def _get_extensions_image(self, ocp_version: str) -> str:
-        """Get rhel-coreos-extensions image ref from the OCP release."""
+    def _get_extensions_images(self, ocp_version: str) -> list[str]:
+        """Get every rhel-coreos(-N)-extensions image ref from the OCP release.
+
+        OCP payloads since 4.21 carry two OS generations side by side (RHCOS 9
+        and RHCOS 10), each with its own extensions image holding that
+        generation's kata and edk2 RPMs. Cluster nodes may run either
+        generation, so reference values are computed from all of them;
+        measurements derived from artifacts shared by both generations (the
+        kata RPMs ship the same guest kernel/initrd/configuration) dedupe
+        into a single value, and only the firmware-derived measurements
+        (mr_td, SNP launch measurement) are emitted per generation.
+        """
         release_image = f"{self.ocp_release_repo}:{ocp_version}-x86_64"
-        cmd = [
-            "oc", "adm", "release", "info",
-            "--image-for=rhel-coreos-extensions",
-            release_image,
-        ]
+        cmd = ["oc", "adm", "release", "info", "-o", "json", release_image]
         if self.authfile:
             cmd.extend(["-a", self.authfile])
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
-            raise RuntimeError(f"Failed to get extensions image for OCP {ocp_version}:\n{result.stderr}")
-        return remap_registry(result.stdout.strip(), self.mirror_registry)
+            raise RuntimeError(f"Failed to get extensions images for OCP {ocp_version}:\n{result.stderr}")
+        refs = []
+        for tag in json.loads(result.stdout).get("references", {}).get("spec", {}).get("tags", []):
+            if self.EXTENSIONS_IMAGE_TAG_RE.fullmatch(tag.get("name", "")):
+                ref = tag.get("from", {}).get("name", "")
+                if ref:
+                    refs.append(remap_registry(ref, self.mirror_registry))
+        if not refs:
+            raise RuntimeError(
+                f"No rhel-coreos(-N)-extensions images found in OCP {ocp_version} release")
+        return refs
 
     def _extract_extensions(self, image_ref, dest_dir):
         """Extract the RPM extensions directory from the image using oc."""
