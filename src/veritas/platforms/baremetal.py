@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 
 from veritas.vendor.td_payload_qemu_hash import compute_kernel_hash
+from veritas.vendor.tdx_rtmr1 import rtmr1_direct
 from veritas.vendor.td_shim_tee_info_hash import compute_mrtd
 from veritas.models import ReferenceValue
 from veritas.platforms.base import PlatformExtractor
@@ -432,13 +433,18 @@ class BaremetalExtractor(PlatformExtractor):
                 initrd_size=initrd_size,
                 mem_size=self.mem_size,
             )
+            # QEMU shipped in RHEL 10 and later skips the legacy setup-header
+            # patch for TDX guests, so those guests measure the pristine
+            # kernel. Emit both variants; the merge dedupes the pristine one
+            # across runtime-class variants that share the same kernel.
+            pristine = compute_kernel_hash(str(artifact_paths["vmlinuz"]), patched=False)
             values.append(ReferenceValue(
                 name="tdvfkernel",
-                values=[digest],
+                values=[digest, pristine],
                 category="executables",
                 description="Kernel binary (vmlinuz) digest from UEFI event log",
                 algorithm="sha384",
-                source="kata-containers RPM (PE Authenticode hash, QEMU-patched)",
+                source="kata-containers RPM (PE Authenticode hash, QEMU-patched and pristine)",
             ))
 
         cmdlines = self._kernel_cmdlines(is_gpu=is_gpu)
@@ -603,6 +609,15 @@ class BaremetalExtractor(PlatformExtractor):
                  "%d unique rtmr_1, %d unique rtmr_2",
                  len(cmdlines), len(rtmr1_values), len(rtmr2_values))
 
+        # QEMU shipped in RHEL 10 and later skips the legacy setup-header
+        # patch for TDX guests, so their RTMR1 chains over the pristine
+        # kernel, while tdx-measure only models the patched variant. Emit
+        # both; the pristine value does not depend on the cmdline or on the
+        # initrd variant.
+        pristine_rtmr1 = rtmr1_direct(str(vmlinuz), patched=False)
+        if pristine_rtmr1 not in rtmr1_values:
+            rtmr1_values.append(pristine_rtmr1)
+
         variant = "GPU " if is_gpu else ""
         source_suffix = f"kernel cmdline (--kernel-cmdline --gpu)" if (self.kernel_cmdline and is_gpu) else \
             f"kernel cmdline (--kernel-cmdline)" if self.kernel_cmdline else \
@@ -616,7 +631,7 @@ class BaremetalExtractor(PlatformExtractor):
                 category="executables",
                 description="Runtime measurement register 1 (kernel + boot services)",
                 algorithm="sha384",
-                source=f"tdx-measure --runtime-only ({source_suffix})",
+                source=f"tdx-measure --runtime-only, QEMU-patched and pristine kernel ({source_suffix})",
             ))
         if rtmr2_values:
             values.append(ReferenceValue(

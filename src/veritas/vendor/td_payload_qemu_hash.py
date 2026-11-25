@@ -169,6 +169,7 @@ def compute_kernel_hash(
     kernel_path: str,
     initrd_size: int = 0,
     mem_size: int = 0x80000000,
+    patched: bool = True,
 ) -> str:
     """Compute tdvfkernel hash from a vmlinuz binary.
 
@@ -180,6 +181,10 @@ def compute_kernel_hash(
         kernel_path: Path to vmlinuz binary.
         initrd_size: Size of the initrd file in bytes.
         mem_size: VM memory size in bytes (default: 2 GB, kata default).
+        patched: Apply QEMU's direct boot patches. QEMU shipped in RHEL 10
+            and later skips the patching for TDX guests, so those guests
+            measure the pristine kernel; compute that variant with
+            patched=False.
     """
     path = Path(kernel_path)
     if not path.exists():
@@ -194,7 +199,8 @@ def compute_kernel_hash(
     if protocol < 0x206:
         raise ValueError("Protocol version should be 2.06+")
 
-    patch_kernel(buf, initrd_size, mem_size)
+    if patched:
+        patch_kernel(buf, initrd_size, mem_size)
 
     hasher = hashlib.sha384()
     num_regions, regions_base, regions_size = _get_image_regions(buf)

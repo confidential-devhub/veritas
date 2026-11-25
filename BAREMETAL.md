@@ -15,6 +15,14 @@ RPMs ship the same guest kernel/initrd/configuration) produce identical
 values and are merged; only the firmware-derived values (mr_td, SNP
 launch measurement) differ per generation.
 
+## Kernel measurement variants (TDX)
+
+QEMU used to patch the bzImage setup header of TDX guests before OVMF
+measured the kernel. QEMU shipped in RHEL 10 and later skips that
+patch, so those guests measure the pristine kernel. Veritas emits both
+variants of `tdvfkernel` and `rtmr_1`, covering nodes with either QEMU
+behaviour.
+
 Supports TDX and SNP.
 
 ## Usage
