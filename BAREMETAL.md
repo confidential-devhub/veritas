@@ -5,6 +5,24 @@ release payload, extracts the `kata-containers` and `edk2-ovmf` RPMs,
 and computes reference values from the firmware, kernel, and initrd
 binaries inside them.
 
+Since OCP 4.21 the release payload carries two OS generations side by
+side (RHCOS 9 and RHCOS 10), each with its own extensions image
+(`rhel-coreos-extensions` / `rhel-coreos-10-extensions`). Veritas
+resolves every extensions image in the payload and emits measurements
+from all of them, so the reference values cover clusters whose nodes
+run either generation. Artifacts shared by both generations (the kata
+RPMs ship the same guest kernel/initrd/configuration) produce identical
+values and are merged; only the firmware-derived values (mr_td, SNP
+launch measurement) differ per generation.
+
+## Kernel measurement variants (TDX)
+
+QEMU used to patch the bzImage setup header of TDX guests before OVMF
+measured the kernel. QEMU shipped in RHEL 10 and later skips that
+patch, so those guests measure the pristine kernel. Veritas emits both
+variants of `tdvfkernel` and `rtmr_1`, covering nodes with either QEMU
+behaviour.
+
 Supports TDX and SNP.
 
 ## Usage
